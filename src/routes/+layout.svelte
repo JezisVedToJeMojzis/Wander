@@ -14,7 +14,7 @@
 </script>
 
 <div class="mx-auto flex min-h-screen w-full max-w-md flex-col">
-	<main class="flex-1 px-4 pt-5 {showNav ? 'pb-24' : 'pb-6'}">
+	<main class="safe-top flex-1 px-4 {showNav ? 'pb-24' : 'pb-6'}">
 		{@render children()}
 	</main>
 

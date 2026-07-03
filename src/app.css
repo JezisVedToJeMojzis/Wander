@@ -20,6 +20,8 @@ body {
 .safe-bottom {
 	padding-bottom: env(safe-area-inset-bottom);
 }
+/* Base top padding PLUS the safe-area inset, so content clears the status bar /
+   notch when the app runs as an installed PWA (viewport-fit=cover). */
 .safe-top {
-	padding-top: env(safe-area-inset-top);
+	padding-top: calc(env(safe-area-inset-top) + 1.25rem);
 }
