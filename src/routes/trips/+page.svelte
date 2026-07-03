@@ -35,13 +35,8 @@
 		{/if}
 		<input
 			name="name"
-			placeholder="Trip name (e.g. Berlin weekend)"
-			required
-			class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-		/>
-		<input
-			name="destination"
 			placeholder="Destination (e.g. Berlin, Germany)"
+			required
 			class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 		/>
 		<div class="flex gap-3">
@@ -87,14 +82,11 @@
 					class="block rounded-2xl border border-slate-800 bg-slate-900 p-4 active:bg-slate-800"
 				>
 					<div class="flex items-start justify-between gap-2">
-						<h2 class="text-lg font-semibold">{trip.name}</h2>
+						<h2 class="text-lg font-semibold">📍 {trip.name}</h2>
 						{#if trip.role === 'organizer'}
 							<span class="rounded-full bg-sky-950 px-2 py-0.5 text-xs text-sky-300">organizer</span>
 						{/if}
 					</div>
-					{#if trip.destination}
-						<p class="text-sm text-slate-400">📍 {trip.destination}</p>
-					{/if}
 					<p class="mt-1 text-xs text-slate-500">
 						{#if dates}{dates} · {/if}{trip.members} {trip.members === 1 ? 'person' : 'people'}
 					</p>

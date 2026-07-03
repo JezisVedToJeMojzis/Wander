@@ -12,21 +12,19 @@ export const load: PageServerLoad = async ({ locals }) => {
 export const actions: Actions = {
 	default: async ({ request, cookies, url }) => {
 		const form = await request.formData();
-		const email = String(form.get('email') ?? '')
-			.trim()
-			.toLowerCase();
+		const name = String(form.get('name') ?? '').trim();
 		const password = String(form.get('password') ?? '');
 
-		if (!email || !password) {
-			return fail(400, { email, error: 'Enter your email and password.' });
+		if (!name || !password) {
+			return fail(400, { name, error: 'Enter your name and password.' });
 		}
 
 		const db = await getDb();
-		const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
+		const found = await db.select().from(users).where(eq(users.name, name)).limit(1);
 		const user = found[0];
 
 		if (!user || !(await verifyPassword(user.passwordHash, password))) {
-			return fail(400, { email, error: 'Incorrect email or password.' });
+			return fail(400, { name, error: 'Incorrect name or password.' });
 		}
 
 		await createSession(user.id, cookies);

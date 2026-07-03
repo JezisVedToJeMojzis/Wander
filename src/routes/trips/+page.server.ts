@@ -18,7 +18,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.select({
 			id: trips.id,
 			name: trips.name,
-			destination: trips.destination,
 			startDate: trips.startDate,
 			endDate: trips.endDate,
 			status: trips.status,
@@ -39,11 +38,10 @@ export const actions: Actions = {
 		const user = locals.user!;
 		const data = await request.formData();
 		const name = String(data.get('name') ?? '').trim();
-		const destination = String(data.get('destination') ?? '').trim() || null;
 		const startDate = String(data.get('startDate') ?? '').trim() || null;
 		const endDate = String(data.get('endDate') ?? '').trim() || null;
 
-		if (!name) return fail(400, { error: 'Give your trip a name.' });
+		if (!name) return fail(400, { error: 'Enter a destination.' });
 		if (startDate && endDate && endDate < startDate) {
 			return fail(400, { error: 'End date is before the start date.' });
 		}
@@ -51,7 +49,7 @@ export const actions: Actions = {
 		const db = await getDb();
 		const inserted = await db
 			.insert(trips)
-			.values({ name, destination, startDate, endDate, createdBy: user.id })
+			.values({ name, startDate, endDate, createdBy: user.id })
 			.returning({ id: trips.id });
 
 		await db

@@ -1,6 +1,7 @@
 // Build a Google Maps deep link for an activity/place.
-// Prefer precise coordinates; otherwise search by the place name (+ trip destination
-// as a disambiguating hint). Returns null when there's nothing to point at.
+// Prefer searching by the place *name* (+ trip destination as a hint): Google resolves
+// it to the actual point of interest and opens its details card *selected*. A raw
+// lat/lng query only drops an unlabeled pin, so coordinates are just a last resort.
 export function googleMapsUrl(opts: {
 	lat?: string | null;
 	lng?: string | null;
@@ -9,13 +10,19 @@ export function googleMapsUrl(opts: {
 }): string | null {
 	const { lat, lng, locationName, destination } = opts;
 
-	if (lat && lng) {
-		return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`;
+	// Append the destination as a hint, unless the location already mentions it
+	// (avoids "…, Vienna, Vienna" when the user typed a full address).
+	const parts = [locationName];
+	if (destination && !locationName?.toLowerCase().includes(destination.toLowerCase())) {
+		parts.push(destination);
 	}
-
-	const query = [locationName, destination].filter(Boolean).join(', ');
+	const query = parts.filter(Boolean).join(', ');
 	if (query.trim()) {
 		return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+	}
+
+	if (lat && lng) {
+		return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`;
 	}
 
 	return null;

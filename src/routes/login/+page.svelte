@@ -18,12 +18,11 @@
 			<p class="rounded-lg bg-red-950 px-3 py-2 text-sm text-red-300">{form.error}</p>
 		{/if}
 		<input
-			name="email"
-			type="email"
-			inputmode="email"
-			autocomplete="email"
-			placeholder="Email"
-			value={form?.email ?? ''}
+			name="name"
+			type="text"
+			autocomplete="username"
+			placeholder="Name"
+			value={form?.name ?? ''}
 			required
 			class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 		/>

@@ -37,7 +37,7 @@ export async function createSession(userId: string, cookies: Cookies): Promise<v
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
-		secure: process.env.NODE_ENV === 'production',
+		secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
 		expires: expiresAt
 	});
 }
@@ -51,7 +51,7 @@ export async function destroySession(cookies: Cookies): Promise<void> {
 	cookies.delete(SESSION_COOKIE, { path: '/' });
 }
 
-export type SessionUser = Pick<User, 'id' | 'email' | 'name'>;
+export type SessionUser = Pick<User, 'id' | 'name'>;
 
 export async function getUserFromCookies(cookies: Cookies): Promise<SessionUser | null> {
 	const id = cookies.get(SESSION_COOKIE);
@@ -61,7 +61,7 @@ export async function getUserFromCookies(cookies: Cookies): Promise<SessionUser 
 	const row = await db
 		.select({
 			session: sessions,
-			user: { id: users.id, email: users.email, name: users.name }
+			user: { id: users.id, name: users.name }
 		})
 		.from(sessions)
 		.innerJoin(users, eq(sessions.userId, users.id))

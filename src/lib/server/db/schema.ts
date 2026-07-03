@@ -17,8 +17,8 @@ import {
 
 export const users = pgTable('users', {
 	id: uuid('id').primaryKey().defaultRandom(),
-	email: text('email').notNull().unique(),
-	name: text('name').notNull(),
+	// Name is the login identifier, so it must be unique.
+	name: text('name').notNull().unique(),
 	passwordHash: text('password_hash').notNull(),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
@@ -58,7 +58,6 @@ export const friendships = pgTable(
 export const trips = pgTable('trips', {
 	id: uuid('id').primaryKey().defaultRandom(),
 	name: text('name').notNull(),
-	destination: text('destination'),
 	startDate: date('start_date'),
 	endDate: date('end_date'),
 	status: text('status', { enum: ['planning', 'scheduled', 'done'] })
@@ -112,7 +111,17 @@ export const activities = pgTable(
 			.references(() => trips.id, { onDelete: 'cascade' }),
 		title: text('title').notNull(),
 		category: text('category', {
-			enum: ['food', 'sightseeing', 'nightlife', 'outdoors', 'lodging', 'transport', 'other']
+			enum: [
+				'food',
+				'sightseeing',
+				'museum',
+				'culture',
+				'streetart',
+				'nightlife',
+				'outdoors',
+				'sport',
+				'other'
+			]
 		})
 			.notNull()
 			.default('other'),
@@ -121,7 +130,6 @@ export const activities = pgTable(
 		locationName: text('location_name'),
 		lat: text('lat'),
 		lng: text('lng'),
-		url: text('url'),
 		estCost: integer('est_cost'),
 		// Scheduling: null = still just an idea; set = placed on the itinerary.
 		scheduledDate: date('scheduled_date'),

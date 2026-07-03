@@ -20,17 +20,26 @@
 	let copied = $state(false);
 	let showAddGroup = $state(false);
 	let showSettings = $state(false);
+	let mineOnly = $state(false); // "All vs Mine" filter for Activities + Plan
+
+	// "Mine" = activities I proposed or upvoted.
+	const isMine = (a: { proposedByName: string; myVote: number }) =>
+		a.proposedByName === 'You' || a.myVote === 1;
+	const visiblePool = $derived(mineOnly ? data.pool.filter(isMine) : data.pool);
+	const visibleScheduled = $derived(mineOnly ? data.scheduled.filter(isMine) : data.scheduled);
 
 	const eur = (n: number) => `€${n.toLocaleString()}`;
-	const planTotal = $derived(data.scheduled.reduce((s, a) => s + (a.estCost ?? 0), 0));
+	const planTotal = $derived(visibleScheduled.reduce((s, a) => s + (a.estCost ?? 0), 0));
 
 	const categories = [
 		{ value: 'food', label: '🍽️ Food' },
 		{ value: 'sightseeing', label: '🏛️ Sightseeing' },
+		{ value: 'museum', label: '🖼️ Museum' },
+		{ value: 'culture', label: '🎭 Culture' },
+		{ value: 'streetart', label: '🎨 Street art' },
 		{ value: 'nightlife', label: '🌃 Nightlife' },
 		{ value: 'outdoors', label: '🥾 Outdoors' },
-		{ value: 'lodging', label: '🛏️ Lodging' },
-		{ value: 'transport', label: '🚆 Transport' },
+		{ value: 'sport', label: '⚽ Sport' },
 		{ value: 'other', label: '📌 Other' }
 	];
 	const catLabel = (v: string) => categories.find((c) => c.value === v)?.label ?? '📌 Other';
@@ -46,7 +55,7 @@
 	// Group scheduled activities by day for the timeline.
 	const days = $derived(
 		Object.entries(
-			data.scheduled.reduce<Record<string, typeof data.scheduled>>((acc, a) => {
+			visibleScheduled.reduce<Record<string, typeof data.scheduled>>((acc, a) => {
 				(acc[a.scheduledDate!] ??= []).push(a);
 				return acc;
 			}, {})
@@ -66,7 +75,7 @@
 </script>
 
 {#snippet stopCard(s: (typeof view.unassigned)[number], i: number, currentGroupId: string | null)}
-	{@const maps = googleMapsUrl({ lat: s.lat, lng: s.lng, locationName: s.locationName, destination: data.trip.destination })}
+	{@const maps = googleMapsUrl({ lat: s.lat, lng: s.lng, locationName: s.locationName, destination: data.trip.name })}
 	<li class="relative rounded-2xl border border-slate-800 bg-slate-900 p-3">
 		<span
 			class="absolute -left-[1.38rem] top-3 flex h-5 w-5 items-center justify-center rounded-full bg-sky-600 text-[10px] font-bold text-white"
@@ -109,13 +118,12 @@
 			aria-label="Trip settings"
 		>{showSettings ? 'Done' : '⚙️ Settings'}</button>
 	</div>
-	<h1 class="mt-1 text-2xl font-bold">{data.trip.name}</h1>
-	<p class="text-sm text-slate-400">
-		{#if data.trip.destination}📍 {data.trip.destination}{/if}
-		{#if data.trip.startDate}
-			· {fmtDay(data.trip.startDate)}{#if data.trip.endDate} – {fmtDay(data.trip.endDate)}{/if}
-		{/if}
-	</p>
+	<h1 class="mt-1 text-2xl font-bold">📍 {data.trip.name}</h1>
+	{#if data.trip.startDate}
+		<p class="text-sm text-slate-400">
+			{fmtDay(data.trip.startDate)}{#if data.trip.endDate} – {fmtDay(data.trip.endDate)}{/if}
+		</p>
+	{/if}
 </header>
 
 {#if showSettings}
@@ -126,17 +134,13 @@
 		{#if data.myRole === 'organizer'}
 			<form method="POST" action="?/updateTrip" use:enhance class="flex flex-col gap-3">
 				<h2 class="text-sm font-bold uppercase tracking-wide text-slate-400">Trip details</h2>
+				<span class="text-xs text-slate-400">Destination</span>
 				<input
 					name="name"
 					value={data.trip.name}
+					placeholder="Destination (e.g. Berlin)"
 					required
-					class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-				/>
-				<input
-					name="destination"
-					value={data.trip.destination ?? ''}
-					placeholder="Destination"
-					class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
+					class="-mt-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 				/>
 				<div class="flex gap-3">
 					<label class="flex flex-1 flex-col gap-1 text-xs text-slate-400">
@@ -187,7 +191,7 @@
 {:else}
 
 <div class="mb-5 flex rounded-xl bg-slate-800 p-1 text-xs font-medium">
-	{#each [['ideas', `Ideas (${data.pool.length})`], ['plan', `Plan (${data.scheduled.length})`], ['route', 'Route'], ['people', `People (${data.members.length})`]] as [key, label] (key)}
+	{#each [['ideas', `Activities (${data.pool.length})`], ['plan', `Plan (${data.scheduled.length})`], ['route', 'Route'], ['people', `People (${data.members.length})`]] as [key, label] (key)}
 		<button
 			onclick={() => (tab = key as Tab)}
 			class="flex-1 rounded-lg py-2 {tab === key ? 'bg-sky-600 text-white' : 'text-slate-300'}"
@@ -235,23 +239,16 @@
 			</select>
 			<input
 				name="locationName"
-				placeholder="Location for the map (e.g. Bodestraße 1-3)"
+				placeholder="Location — required for the route (e.g. Pergamonmuseum)"
+				required
 				class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 			/>
-			<div class="flex gap-3">
-				<input
-					name="url"
-					inputmode="url"
-					placeholder="Link (optional)"
-					class="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-				/>
-				<input
-					name="estCost"
-					inputmode="numeric"
-					placeholder="€ cost"
-					class="w-24 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-				/>
-			</div>
+			<input
+				name="estCost"
+				inputmode="numeric"
+				placeholder="Estimated cost € (optional)"
+				class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
+			/>
 			<textarea
 				name="notes"
 				placeholder="Notes (optional)"
@@ -259,41 +256,43 @@
 				class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 			></textarea>
 			<button type="submit" class="rounded-xl bg-sky-600 py-3 font-semibold text-white active:bg-sky-700">
-				Add to ideas
+				Add activity
 			</button>
 		</form>
 	{/if}
 
-	{#if data.pool.length === 0}
-		<p class="mt-10 text-center text-slate-400">No ideas yet. Add the first one!</p>
+	{#if data.pool.length > 0}
+		<div class="mb-4 flex rounded-xl bg-slate-800 p-1 text-sm font-medium">
+			<button onclick={() => (mineOnly = false)} class="flex-1 rounded-lg py-1.5 {!mineOnly ? 'bg-sky-600 text-white' : 'text-slate-300'}">All</button>
+			<button onclick={() => (mineOnly = true)} class="flex-1 rounded-lg py-1.5 {mineOnly ? 'bg-sky-600 text-white' : 'text-slate-300'}">Mine</button>
+		</div>
+	{/if}
+
+	{#if visiblePool.length === 0}
+		<p class="mt-10 text-center text-slate-400">
+			{mineOnly ? 'Nothing of yours yet — add or upvote some activities.' : 'No activities yet. Add the first one!'}
+		</p>
 	{:else}
 		<ul class="flex flex-col gap-3">
-			{#each data.pool as a (a.id)}
-				{@const maps = googleMapsUrl({ lat: a.lat, lng: a.lng, locationName: a.locationName, destination: data.trip.destination })}
+			{#each visiblePool as a (a.id)}
+				{@const maps = googleMapsUrl({ lat: a.lat, lng: a.lng, locationName: a.locationName, destination: data.trip.name })}
 				<li class="rounded-2xl border border-slate-800 bg-slate-900 p-4">
 					<div class="flex gap-3">
-						<!-- Vote control -->
-						<div class="flex flex-col items-center">
-							<form method="POST" action="?/vote" use:enhance>
-								<input type="hidden" name="activityId" value={a.id} />
-								<input type="hidden" name="value" value={a.myVote === 1 ? 0 : 1} />
-								<button
-									type="submit"
-									aria-label="Interested"
-									class="text-xl {a.myVote === 1 ? 'text-sky-400' : 'text-slate-500'}"
-								>▲</button>
-							</form>
-							<span class="text-sm font-bold">{a.score}</span>
-							<form method="POST" action="?/vote" use:enhance>
-								<input type="hidden" name="activityId" value={a.id} />
-								<input type="hidden" name="value" value={a.myVote === -1 ? 0 : -1} />
-								<button
-									type="submit"
-									aria-label="Not interested"
-									class="text-xl {a.myVote === -1 ? 'text-red-400' : 'text-slate-500'}"
-								>▼</button>
-							</form>
-						</div>
+						<!-- Upvote control (interest only) -->
+						<form method="POST" action="?/vote" use:enhance>
+							<input type="hidden" name="activityId" value={a.id} />
+							<input type="hidden" name="value" value={a.myVote === 1 ? 0 : 1} />
+							<button
+								type="submit"
+								aria-label={a.myVote === 1 ? 'Remove your interest' : "I'm interested"}
+								class="flex h-14 w-12 flex-col items-center justify-center rounded-xl border {a.myVote === 1
+									? 'border-sky-500 bg-sky-950 text-sky-300'
+									: 'border-slate-700 bg-slate-800 text-slate-400'}"
+							>
+								<span class="text-lg leading-none">👍</span>
+								<span class="text-sm font-bold">{a.score}</span>
+							</button>
+						</form>
 
 						<div class="min-w-0 flex-1">
 							<p class="font-semibold">{a.title}</p>
@@ -309,9 +308,6 @@
 							<div class="mt-2 flex flex-wrap gap-2 text-xs">
 								{#if maps}
 									<a href={maps} target="_blank" rel="noreferrer" class="rounded-full bg-slate-800 px-3 py-1 text-sky-300">🗺️ Maps</a>
-								{/if}
-								{#if a.url}
-									<a href={a.url} target="_blank" rel="noreferrer" class="rounded-full bg-slate-800 px-3 py-1 text-sky-300">🔗 Link</a>
 								{/if}
 								<button
 									onclick={() => { scheduleFor = scheduleFor === a.id ? null : a.id; editFor = null; }}
@@ -348,11 +344,8 @@
 												<option value={c.value} selected={c.value === a.category}>{c.label}</option>
 											{/each}
 										</select>
-										<input name="locationName" value={a.locationName ?? ''} placeholder="Location for the map" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
-										<div class="flex gap-2">
-											<input name="url" value={a.url ?? ''} placeholder="Link" class="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
-											<input name="estCost" value={a.estCost ?? ''} inputmode="numeric" placeholder="€" class="w-20 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
-										</div>
+										<input name="locationName" value={a.locationName ?? ''} placeholder="Location (required)" required class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
+										<input name="estCost" value={a.estCost ?? ''} inputmode="numeric" placeholder="Estimated cost €" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
 										<textarea name="notes" rows="2" placeholder="Notes" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base">{a.notes ?? ''}</textarea>
 										<button type="submit" class="rounded-lg bg-sky-600 py-2 text-sm font-semibold text-white">Save changes</button>
 									</form>
@@ -386,11 +379,18 @@
 			{/each}
 		</ul>
 	{/if}
-{/if}
 {:else if tab === 'plan'}
+	{#if data.scheduled.length > 0}
+		<div class="mb-4 flex rounded-xl bg-slate-800 p-1 text-sm font-medium">
+			<button onclick={() => (mineOnly = false)} class="flex-1 rounded-lg py-1.5 {!mineOnly ? 'bg-sky-600 text-white' : 'text-slate-300'}">All</button>
+			<button onclick={() => (mineOnly = true)} class="flex-1 rounded-lg py-1.5 {mineOnly ? 'bg-sky-600 text-white' : 'text-slate-300'}">Mine</button>
+		</div>
+	{/if}
 	{#if days.length === 0}
 		<p class="mt-10 text-center text-slate-400">
-			Nothing scheduled yet. Schedule winning ideas from the Ideas tab.
+			{mineOnly
+				? 'None of your activities are scheduled yet.'
+				: 'Nothing scheduled yet. Schedule activities from the Activities tab.'}
 		</p>
 	{:else}
 		{#if planTotal > 0}
@@ -410,7 +410,7 @@
 					</div>
 					<ul class="relative flex flex-col gap-3 border-l border-slate-700 pl-4">
 						{#each items as a (a.id)}
-							{@const maps = googleMapsUrl({ lat: a.lat, lng: a.lng, locationName: a.locationName, destination: data.trip.destination })}
+							{@const maps = googleMapsUrl({ lat: a.lat, lng: a.lng, locationName: a.locationName, destination: data.trip.name })}
 							<li class="relative rounded-2xl border border-slate-800 bg-slate-900 p-3">
 								<span class="absolute -left-[1.42rem] top-4 h-2.5 w-2.5 rounded-full bg-sky-500"></span>
 								<div class="flex items-baseline justify-between gap-2">
@@ -559,7 +559,6 @@
 						{m.name}
 						{#if m.role === 'organizer'}<span class="ml-1 rounded-full bg-sky-950 px-2 py-0.5 text-xs text-sky-300">organizer</span>{/if}
 					</p>
-					<p class="truncate text-xs text-slate-500">{m.email}</p>
 				</div>
 				{#if m.friendStatus === 'none'}
 					<form method="POST" action="?/addFriend" use:enhance>
@@ -579,4 +578,5 @@
 			</li>
 		{/each}
 	</ul>
+{/if}
 {/if}

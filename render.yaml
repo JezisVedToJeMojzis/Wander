@@ -1,0 +1,24 @@
+# Render Blueprint: Node web service (SvelteKit + adapter-node).
+# Create the database separately (e.g. Neon) and set DATABASE_URL in the Render
+# dashboard. Render injects PORT automatically. Migrations run on first boot, so a
+# fresh Neon database sets itself up.
+services:
+  - type: web
+    name: wander
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node build
+    envVars:
+      - key: DATABASE_URL
+        sync: false # set in dashboard (Neon connection string, sslmode=require)
+      - key: COOKIE_SECURE
+        value: 'true'
+      # Behind Render's proxy: let SvelteKit rebuild the request origin from the
+      # forwarded headers so form POSTs pass the CSRF/origin check.
+      - key: PROTOCOL_HEADER
+        value: x-forwarded-proto
+      - key: HOST_HEADER
+        value: x-forwarded-host
+      - key: NODE_VERSION
+        value: '22'

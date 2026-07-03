@@ -46,6 +46,18 @@ async function scopeGroupIds(
 	return rows.map((r) => r.id);
 }
 
+// Geocode a place using the trip's destination (its name) as a disambiguating hint,
+// so short inputs like "Colosseum" resolve to the right city.
+async function geocodeForTrip(
+	db: Awaited<ReturnType<typeof getDb>>,
+	tripId: string,
+	locationName: string
+) {
+	const trip = (await db.select({ name: trips.name }).from(trips).where(eq(trips.id, tripId)).limit(1))[0];
+	const query = trip?.name ? `${locationName}, ${trip.name}` : locationName;
+	return geocode(query);
+}
+
 const addDaysISO = (iso: string, days: number): string => {
 	const d = new Date(iso + 'T00:00:00Z');
 	d.setUTCDate(d.getUTCDate() + days);
@@ -70,7 +82,6 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.select({
 			id: users.id,
 			name: users.name,
-			email: users.email,
 			role: tripMembers.role
 		})
 		.from(tripMembers)
@@ -227,14 +238,15 @@ export const actions: Actions = {
 		const data = await request.formData();
 		const title = String(data.get('title') ?? '').trim();
 		if (!title) return fail(400, { error: 'Activity needs a title.' });
+		const locationName = String(data.get('locationName') ?? '').trim();
+		if (!locationName) return fail(400, { error: 'Add a location — it’s needed to plan the route.' });
 
 		const category = String(data.get('category') ?? 'other');
 		const estCostRaw = String(data.get('estCost') ?? '').trim();
 		const estCost = estCostRaw ? Number.parseInt(estCostRaw, 10) : null;
-		const locationName = String(data.get('locationName') ?? '').trim() || null;
 
 		// Geocode the location up front so it can join routes right away (best-effort).
-		const geo = locationName ? await geocode(locationName) : null;
+		const geo = await geocodeForTrip(db, params.id, locationName);
 
 		await db.insert(activities).values({
 			tripId: params.id,
@@ -243,7 +255,6 @@ export const actions: Actions = {
 			locationName,
 			lat: geo?.lat ?? null,
 			lng: geo?.lng ?? null,
-			url: String(data.get('url') ?? '').trim() || null,
 			notes: String(data.get('notes') ?? '').trim() || null,
 			estCost: Number.isFinite(estCost) ? estCost : null,
 			proposedBy: me.id
@@ -272,16 +283,17 @@ export const actions: Actions = {
 			return fail(403, { error: 'Only the proposer or an organizer can edit this.' });
 		}
 
+		const locationName = String(data.get('locationName') ?? '').trim();
+		if (!locationName) return fail(400, { error: 'Add a location — it’s needed to plan the route.' });
 		const category = String(data.get('category') ?? 'other');
 		const estCostRaw = String(data.get('estCost') ?? '').trim();
 		const estCost = estCostRaw ? Number.parseInt(estCostRaw, 10) : null;
-		const locationName = String(data.get('locationName') ?? '').trim() || null;
 
 		// Re-geocode only when the location text actually changed.
 		let lat = existing.lat;
 		let lng = existing.lng;
 		if (locationName !== existing.locationName) {
-			const geo = locationName ? await geocode(locationName) : null;
+			const geo = await geocodeForTrip(db, params.id, locationName);
 			lat = geo?.lat ?? null;
 			lng = geo?.lng ?? null;
 		}
@@ -294,8 +306,7 @@ export const actions: Actions = {
 				locationName,
 				lat,
 				lng,
-				url: String(data.get('url') ?? '').trim() || null,
-				notes: String(data.get('notes') ?? '').trim() || null,
+					notes: String(data.get('notes') ?? '').trim() || null,
 				estCost: Number.isFinite(estCost) ? estCost : null
 			})
 			.where(eq(activities.id, activityId));
@@ -337,20 +348,19 @@ export const actions: Actions = {
 			.limit(1);
 		if (!a[0]) return fail(400, { error: 'Unknown activity.' });
 
-		if (value === 0) {
-			await db
-				.delete(activityVotes)
-				.where(
-					and(eq(activityVotes.activityId, activityId), eq(activityVotes.userId, me.id))
-				);
-		} else {
+		// Upvote-only: value 1 marks interest, anything else clears it.
+		if (value === 1) {
 			await db
 				.insert(activityVotes)
-				.values({ activityId, userId: me.id, value })
+				.values({ activityId, userId: me.id, value: 1 })
 				.onConflictDoUpdate({
 					target: [activityVotes.activityId, activityVotes.userId],
-					set: { value }
+					set: { value: 1 }
 				});
+		} else {
+			await db
+				.delete(activityVotes)
+				.where(and(eq(activityVotes.activityId, activityId), eq(activityVotes.userId, me.id)));
 		}
 		return { voted: true };
 	},
@@ -413,8 +423,7 @@ export const actions: Actions = {
 
 		const data = await request.formData();
 		const name = String(data.get('name') ?? '').trim();
-		if (!name) return fail(400, { settingsError: 'Trip needs a name.' });
-		const destination = String(data.get('destination') ?? '').trim() || null;
+		if (!name) return fail(400, { settingsError: 'Enter a destination.' });
 		const startDate = String(data.get('startDate') ?? '').trim() || null;
 		const endDate = String(data.get('endDate') ?? '').trim() || null;
 		if (startDate && endDate && endDate < startDate) {
@@ -423,7 +432,7 @@ export const actions: Actions = {
 
 		await db
 			.update(trips)
-			.set({ name, destination, startDate, endDate })
+			.set({ name, startDate, endDate })
 			.where(eq(trips.id, params.id));
 		return { tripUpdated: true };
 	},

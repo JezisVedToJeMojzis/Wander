@@ -21,18 +21,8 @@
 			name="name"
 			type="text"
 			autocomplete="name"
-			placeholder="Your name"
+			placeholder="Your name (used to log in)"
 			value={form?.name ?? ''}
-			required
-			class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-		/>
-		<input
-			name="email"
-			type="email"
-			inputmode="email"
-			autocomplete="email"
-			placeholder="Email"
-			value={form?.email ?? ''}
 			required
 			class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 		/>
