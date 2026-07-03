@@ -137,7 +137,7 @@
 		</p>
 	{/if}
 	{#if data.trip.accommodationName}
-		<p class="text-xs text-slate-500">🏨 {data.trip.accommodationName}</p>
+		<p class="text-xs text-slate-500">🏠 {data.trip.accommodationName}</p>
 	{/if}
 </header>
 
@@ -255,14 +255,17 @@
 				required
 				class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
 			/>
-			<select
-				name="category"
-				class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-			>
-				{#each categories as c (c.value)}
-					<option value={c.value}>{c.label}</option>
-				{/each}
-			</select>
+			<div class="relative">
+				<select
+					name="category"
+					class="w-full appearance-none rounded-xl border border-slate-700 bg-slate-800 py-3 pl-4 pr-10 text-base text-slate-100 outline-none focus:border-sky-500"
+				>
+					{#each categories as c (c.value)}
+						<option value={c.value}>{c.label}</option>
+					{/each}
+				</select>
+				<span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">▾</span>
+			</div>
 			<input
 				name="locationName"
 				placeholder="Location — required for the route (e.g. Pergamonmuseum)"
@@ -293,16 +296,19 @@
 				<button onclick={() => (mineOnly = false)} class="flex-1 rounded-lg py-1.5 {!mineOnly ? 'bg-sky-600 text-white' : 'text-slate-300'}">All</button>
 				<button onclick={() => (mineOnly = true)} class="flex-1 rounded-lg py-1.5 {mineOnly ? 'bg-sky-600 text-white' : 'text-slate-300'}">Mine</button>
 			</div>
-			<select
-				bind:value={catFilter}
-				aria-label="Filter by category"
-				class="rounded-xl border border-slate-700 bg-slate-800 px-3 text-sm text-slate-200 outline-none focus:border-sky-500"
-			>
-				<option value="all">All types</option>
-				{#each categories.filter((c) => presentCats.includes(c.value)) as c (c.value)}
-					<option value={c.value}>{c.label}</option>
-				{/each}
-			</select>
+			<div class="relative">
+				<select
+					bind:value={catFilter}
+					aria-label="Filter by category"
+					class="h-full w-full appearance-none rounded-xl border border-slate-700 bg-slate-800 py-2 pl-4 pr-10 text-sm text-slate-200 outline-none focus:border-sky-500"
+				>
+					<option value="all">All types</option>
+					{#each categories.filter((c) => presentCats.includes(c.value)) as c (c.value)}
+						<option value={c.value}>{c.label}</option>
+					{/each}
+				</select>
+				<span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">▾</span>
+			</div>
 		</div>
 	{/if}
 
@@ -339,7 +345,7 @@
 						<div class="min-w-0 flex-1">
 							<p class="font-semibold">{a.title}</p>
 							<p class="text-xs text-slate-400">
-								{catLabel(a.category)}{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏨 {fmtKm(a.distFromAccom)}{/if}
+								{catLabel(a.category)}{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏠 {fmtKm(a.distFromAccom)}{/if}
 							</p>
 							{#if a.locationName}<p class="mt-0.5 truncate text-xs text-slate-500">📍 {a.locationName}</p>{/if}
 							{#if a.notes}<p class="mt-1 text-sm text-slate-300">{a.notes}</p>{/if}
@@ -389,11 +395,14 @@
 								>
 									<input type="hidden" name="activityId" value={a.id} />
 									<input name="title" value={a.title} required class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
-									<select name="category" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base">
-										{#each categories as c (c.value)}
-											<option value={c.value} selected={c.value === a.category}>{c.label}</option>
-										{/each}
-									</select>
+									<div class="relative">
+										<select name="category" class="w-full appearance-none rounded-lg border border-slate-700 bg-slate-900 py-2 pl-3 pr-10 text-base text-slate-100">
+											{#each categories as c (c.value)}
+												<option value={c.value} selected={c.value === a.category}>{c.label}</option>
+											{/each}
+										</select>
+										<span class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-slate-400">▾</span>
+									</div>
 									<input name="locationName" value={a.locationName ?? ''} placeholder="Location (required)" required class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
 									<input name="estCost" value={a.estCost ?? ''} inputmode="numeric" placeholder="Estimated cost €" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base" />
 									<textarea name="notes" rows="2" placeholder="Notes" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base">{a.notes ?? ''}</textarea>
@@ -451,7 +460,7 @@
 							{#if day.mapsUrlFromAccom}
 								<label class="flex items-center gap-1 text-xs text-slate-400">
 									<input type="checkbox" checked={usesAccom(day.date)} onchange={(e) => (accomStart[day.date] = e.currentTarget.checked)} class="accent-sky-500" />
-									🏨
+									🏠
 								</label>
 							{/if}
 							{#if routeHref(day)}
@@ -475,7 +484,7 @@
 										<span class="shrink-0 select-none text-slate-600" aria-hidden="true">⠿</span>
 									</div>
 									<p class="text-xs text-slate-400">
-										{catLabel(a.category)}<span class="text-slate-500"> · 👍 {a.score}</span>{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏨 {fmtKm(a.distFromAccom)}{/if}
+										{catLabel(a.category)}<span class="text-slate-500"> · 👍 {a.score}</span>{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏠 {fmtKm(a.distFromAccom)}{/if}
 									</p>
 									{#if a.locationName}<p class="mt-0.5 truncate text-xs text-slate-500">📍 {a.locationName}</p>{/if}
 									{#if a.notes}<p class="mt-1 line-clamp-2 text-xs leading-snug text-slate-500">{a.notes}</p>{/if}
