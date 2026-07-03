@@ -22,6 +22,10 @@
 <div class="mb-6 rounded-2xl border border-slate-800 bg-slate-900 p-4">
 	<p class="text-lg font-semibold">{data.account?.name}</p>
 	<p class="mt-1 text-xs text-slate-500">Member since {memberSince}</p>
+	<p class="mt-2 text-sm text-slate-300">
+		🧳 <span class="font-semibold text-white">{data.tripCount}</span>
+		{data.tripCount === 1 ? 'trip' : 'trips'} joined
+	</p>
 </div>
 
 <!-- Change name -->

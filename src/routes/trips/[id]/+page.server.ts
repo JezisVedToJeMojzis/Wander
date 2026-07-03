@@ -1,21 +1,19 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { getDb } from '$lib/server/db';
 import {
 	activities,
 	activityVotes,
 	friendships,
-	routeGroups,
-	routeGroupItems,
 	tripInvites,
 	tripMembers,
 	trips,
 	users
 } from '$lib/server/db/schema';
 import { geocode } from '$lib/server/geocode';
-import { buildRoute } from '$lib/route';
-import { assembleScope, sortGroups, type Decorated, type GroupRow } from '$lib/server/route-view';
+import { haversineKm } from '$lib/route';
+import { googleMapsDirectionsUrl } from '$lib/maps';
 import type { Actions, PageServerLoad } from './$types';
 
 async function requireMembership(tripId: string, userId: string) {
@@ -29,23 +27,6 @@ async function requireMembership(tripId: string, userId: string) {
 	return { db, role: member[0].role };
 }
 
-// owner_id for a scope: null = shared with the trip, my id = personal.
-const ownerForScope = (scope: string, meId: string): string | null =>
-	scope === 'shared' ? null : meId;
-
-async function scopeGroupIds(
-	db: Awaited<ReturnType<typeof getDb>>,
-	tripId: string,
-	ownerId: string | null
-): Promise<string[]> {
-	const where =
-		ownerId === null
-			? and(eq(routeGroups.tripId, tripId), isNull(routeGroups.ownerId))
-			: and(eq(routeGroups.tripId, tripId), eq(routeGroups.ownerId, ownerId));
-	const rows = await db.select({ id: routeGroups.id }).from(routeGroups).where(where);
-	return rows.map((r) => r.id);
-}
-
 // Geocode a place using the trip's destination (its name) as a disambiguating hint,
 // so short inputs like "Colosseum" resolve to the right city.
 async function geocodeForTrip(
@@ -53,21 +34,15 @@ async function geocodeForTrip(
 	tripId: string,
 	locationName: string
 ) {
-	const trip = (await db.select({ name: trips.name }).from(trips).where(eq(trips.id, tripId)).limit(1))[0];
+	const trip = (
+		await db.select({ name: trips.name }).from(trips).where(eq(trips.id, tripId)).limit(1)
+	)[0];
 	const query = trip?.name ? `${locationName}, ${trip.name}` : locationName;
 	return geocode(query);
 }
 
-const addDaysISO = (iso: string, days: number): string => {
-	const d = new Date(iso + 'T00:00:00Z');
-	d.setUTCDate(d.getUTCDate() + days);
-	return d.toISOString().slice(0, 10);
-};
-const dayCountInclusive = (start: string, end: string): number => {
-	const a = new Date(start + 'T00:00:00Z').getTime();
-	const b = new Date(end + 'T00:00:00Z').getTime();
-	return Math.max(1, Math.round((b - a) / 86400000) + 1);
-};
+const hasCoords = (a: { lat: string | null; lng: string | null }) =>
+	!!a.lat && !!a.lng && Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lng));
 
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = locals.user!;
@@ -79,11 +54,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 
 	// Members + my friendship status toward each of them.
 	const memberRows = await db
-		.select({
-			id: users.id,
-			name: users.name,
-			role: tripMembers.role
-		})
+		.select({ id: users.id, name: users.name, role: tripMembers.role })
 		.from(tripMembers)
 		.innerJoin(users, eq(tripMembers.userId, users.id))
 		.where(eq(tripMembers.tripId, params.id));
@@ -111,6 +82,19 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	const organizerCount = members.filter((m) => m.role === 'organizer').length;
 	const canLeave = !(role === 'organizer' && organizerCount === 1);
 
+	// Friends I could invite straight into this trip = my accepted friends not already members.
+	const memberIds = new Set(memberRows.map((m) => m.id));
+	const acceptedFriendIds = myFriendships
+		.filter((f) => f.status === 'accepted')
+		.map((f) => (f.requesterId === me.id ? f.addresseeId : f.requesterId))
+		.filter((id) => !memberIds.has(id));
+	const invitableFriends = acceptedFriendIds.length
+		? await db
+				.select({ id: users.id, name: users.name })
+				.from(users)
+				.where(inArray(users.id, acceptedFriendIds))
+		: [];
+
 	// Activities + vote tallies.
 	const acts = await db.select().from(activities).where(eq(activities.tripId, params.id));
 	const actIds = acts.map((a) => a.id);
@@ -118,38 +102,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		? await db.select().from(activityVotes).where(inArray(activityVotes.activityId, actIds))
 		: [];
 
-	const nameById = new Map(memberRows.map((m) => [m.id, m.name]));
-	const decorated = acts.map((a) => {
-		const votes = allVotes.filter((v) => v.activityId === a.id);
-		const score = votes.reduce((s, v) => s + v.value, 0);
-		const up = votes.filter((v) => v.value === 1).length;
-		const myVote = votes.find((v) => v.userId === me.id)?.value ?? 0;
-		const interestedNames = votes
-			.filter((v) => v.value === 1)
-			.map((v) => (v.userId === me.id ? 'You' : (nameById.get(v.userId) ?? 'Someone')));
-		const proposedByName =
-			a.proposedBy === me.id ? 'You' : (nameById.get(a.proposedBy) ?? 'Someone');
-		const canEdit = a.proposedBy === me.id || role === 'organizer';
-		return { ...a, score, up, myVote, interestedNames, proposedByName, canEdit };
-	});
-
-	const pool = decorated
-		.filter((a) => !a.scheduledDate)
-		.sort((a, b) => b.score - a.score || b.up - a.up);
-
-	const scheduled = decorated
-		.filter((a) => a.scheduledDate)
-		.sort(
-			(a, b) =>
-				(a.scheduledDate! < b.scheduledDate! ? -1 : a.scheduledDate! > b.scheduledDate! ? 1 : 0) ||
-				(a.startTime ?? '').localeCompare(b.startTime ?? '')
-		);
-
-	// ---- Route + grouping ----------------------------------------------------
-	// Backfill missing coordinates by geocoding the location name (then persist so we
-	// don't re-query on every visit). Best-effort: failures just leave the place out.
-	for (const a of decorated) {
-		if ((!a.lat || !a.lng) && a.locationName) {
+	// Backfill any missing coordinates by geocoding the location name (then persist, so we
+	// don't re-query on every visit). Best-effort: failures just leave the place uncoordinated.
+	for (const a of acts) {
+		if (!hasCoords(a) && a.locationName) {
 			const geo = await geocode(a.locationName);
 			if (geo) {
 				a.lat = geo.lat;
@@ -162,48 +118,68 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		}
 	}
 
-	const toDecorated = (a: (typeof decorated)[number]): Decorated => ({
-		id: a.id,
-		title: a.title,
-		score: a.score,
-		category: a.category,
-		locationName: a.locationName,
-		lat: a.lat,
-		lng: a.lng
-	});
-	const allById = new Map(decorated.map((a) => [a.id, toDecorated(a)]));
+	const nameById = new Map(memberRows.map((m) => [m.id, m.name]));
+	const catOf = new Map(acts.map((a) => [a.id, a.category]));
+	const titleOf = new Map(acts.map((a) => [a.id, a.title]));
 
-	// "Mine" = places I added or upvoted. "Shared" = all of the trip's activities.
-	const candidatesMine = decorated
-		.filter((a) => a.proposedBy === me.id || a.myVote === 1)
-		.map(toDecorated);
-	const candidatesShared = decorated.map(toDecorated);
-
-	const allGroups = await db.select().from(routeGroups).where(eq(routeGroups.tripId, params.id));
-	const groupIds = allGroups.map((g) => g.id);
-	const allItems = groupIds.length
-		? await db.select().from(routeGroupItems).where(inArray(routeGroupItems.groupId, groupIds))
-		: [];
-	const itemsByGroup = new Map<string, string[]>();
-	for (const it of allItems) {
-		const list = itemsByGroup.get(it.groupId) ?? [];
-		list.push(it.activityId);
-		itemsByGroup.set(it.groupId, list);
-	}
-	const toGroupRow = (g: (typeof allGroups)[number]): GroupRow & { position: number } => ({
-		id: g.id,
-		name: g.name,
-		kind: g.kind,
-		dayDate: g.dayDate,
-		position: g.position
-	});
-	const mineGroups = sortGroups(allGroups.filter((g) => g.ownerId === me.id).map(toGroupRow));
-	const sharedGroups = sortGroups(allGroups.filter((g) => g.ownerId === null).map(toGroupRow));
-
-	const routeView = {
-		mine: assembleScope(candidatesMine, mineGroups, itemsByGroup, allById),
-		shared: assembleScope(candidatesShared, sharedGroups, itemsByGroup, allById)
+	// Precompute, for each coordinate-bearing place, the 5 nearest other places (added to
+	// this trip) with their distance — used by the "Nearby" helper in the Activities tab.
+	const coordActs = acts.filter(hasCoords).map((a) => ({ id: a.id, lat: Number(a.lat), lng: Number(a.lng) }));
+	const nearbyFor = (a: (typeof acts)[number]) => {
+		if (!hasCoords(a)) return [];
+		const from = { lat: Number(a.lat), lng: Number(a.lng) };
+		return coordActs
+			.filter((o) => o.id !== a.id)
+			.map((o) => ({ id: o.id, title: titleOf.get(o.id)!, category: catOf.get(o.id)!, km: haversineKm(from, o) }))
+			.sort((x, y) => x.km - y.km)
+			.slice(0, 5);
 	};
+
+	const decorated = acts.map((a) => {
+		const votes = allVotes.filter((v) => v.activityId === a.id);
+		const score = votes.reduce((s, v) => s + v.value, 0);
+		const up = votes.filter((v) => v.value === 1).length;
+		const myVote = votes.find((v) => v.userId === me.id)?.value ?? 0;
+		const interestedNames = votes
+			.filter((v) => v.value === 1)
+			.map((v) => (v.userId === me.id ? 'You' : (nameById.get(v.userId) ?? 'Someone')));
+		const proposedByName =
+			a.proposedBy === me.id ? 'You' : (nameById.get(a.proposedBy) ?? 'Someone');
+		const canEdit = a.proposedBy === me.id || role === 'organizer';
+		return { ...a, score, up, myVote, interestedNames, proposedByName, canEdit, nearby: nearbyFor(a) };
+	});
+
+	const pool = decorated
+		.filter((a) => !a.scheduledDate)
+		.sort((a, b) => b.score - a.score || b.up - a.up);
+
+	// Scheduled activities grouped into days; within a day, ordered by the manual drag order.
+	const scheduledActs = decorated
+		.filter((a) => a.scheduledDate)
+		.sort(
+			(a, b) =>
+				(a.scheduledDate! < b.scheduledDate! ? -1 : a.scheduledDate! > b.scheduledDate! ? 1 : 0) ||
+				a.dayOrder - b.dayOrder ||
+				(a.createdAt < b.createdAt ? -1 : 1)
+		);
+
+	const dayMap = new Map<string, typeof scheduledActs>();
+	for (const a of scheduledActs) {
+		const list = dayMap.get(a.scheduledDate!) ?? [];
+		list.push(a);
+		dayMap.set(a.scheduledDate!, list);
+	}
+	const days = [...dayMap.entries()]
+		.sort((a, b) => (a[0] < b[0] ? -1 : 1))
+		.map(([date, items]) => {
+			const routePoints = items.filter(hasCoords).map((a) => ({ lat: a.lat!, lng: a.lng! }));
+			return {
+				date,
+				items,
+				mapsUrl: googleMapsDirectionsUrl(routePoints),
+				total: items.reduce((s, a) => s + (a.estCost ?? 0), 0)
+			};
+		});
 
 	// Ensure a share-link invite exists so it's always ready to copy.
 	let invite = (
@@ -223,11 +199,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		trip,
 		myRole: role,
 		members,
+		invitableFriends,
 		pool,
-		scheduled,
+		days,
+		scheduledCount: scheduledActs.length,
 		inviteToken: invite.token,
-		canLeave,
-		routeView
+		canLeave
 	};
 };
 
@@ -306,7 +283,7 @@ export const actions: Actions = {
 				locationName,
 				lat,
 				lng,
-					notes: String(data.get('notes') ?? '').trim() || null,
+				notes: String(data.get('notes') ?? '').trim() || null,
 				estCost: Number.isFinite(estCost) ? estCost : null
 			})
 			.where(eq(activities.id, activityId));
@@ -365,26 +342,54 @@ export const actions: Actions = {
 		return { voted: true };
 	},
 
+	// Schedule onto a day (date only) or send back to ideas (empty date). New day placements
+	// go to the end of that day's list.
 	schedule: async ({ params, request, locals }) => {
 		const me = locals.user!;
 		const { db } = await requireMembership(params.id, me.id);
 		const data = await request.formData();
 		const activityId = String(data.get('activityId') ?? '');
 		const scheduledDate = String(data.get('scheduledDate') ?? '').trim() || null;
-		const startTime = String(data.get('startTime') ?? '').trim() || null;
-		const durationRaw = String(data.get('durationMin') ?? '').trim();
-		const durationMin = durationRaw ? Number.parseInt(durationRaw, 10) : null;
+
+		let dayOrder = 0;
+		if (scheduledDate) {
+			const sameDay = await db
+				.select({ dayOrder: activities.dayOrder })
+				.from(activities)
+				.where(and(eq(activities.tripId, params.id), eq(activities.scheduledDate, scheduledDate)));
+			dayOrder = sameDay.reduce((max, r) => Math.max(max, r.dayOrder + 1), 0);
+		}
 
 		await db
 			.update(activities)
-			.set({
-				scheduledDate,
-				startTime: scheduledDate ? startTime : null,
-				durationMin: scheduledDate && Number.isFinite(durationMin) ? durationMin : null
-			})
+			.set({ scheduledDate, dayOrder })
 			.where(and(eq(activities.id, activityId), eq(activities.tripId, params.id)));
 
 		return { scheduled: true };
+	},
+
+	// Persist a new manual order for one day (drag-and-drop). `ids` is the ordered list.
+	reorderDay: async ({ params, request, locals }) => {
+		const me = locals.user!;
+		const { db } = await requireMembership(params.id, me.id);
+		const data = await request.formData();
+		const scheduledDate = String(data.get('scheduledDate') ?? '').trim();
+		const ids = data.getAll('ids').map(String);
+		if (!scheduledDate || ids.length === 0) return fail(400, { error: 'Nothing to reorder.' });
+
+		for (let i = 0; i < ids.length; i++) {
+			await db
+				.update(activities)
+				.set({ dayOrder: i })
+				.where(
+					and(
+						eq(activities.id, ids[i]),
+						eq(activities.tripId, params.id),
+						eq(activities.scheduledDate, scheduledDate)
+					)
+				);
+		}
+		return { reordered: true };
 	},
 
 	addFriend: async ({ params, request, locals }) => {
@@ -416,6 +421,37 @@ export const actions: Actions = {
 		return { friended: true };
 	},
 
+	// Add one of my accepted friends straight into this trip as a member.
+	inviteFriend: async ({ params, request, locals }) => {
+		const me = locals.user!;
+		await requireMembership(params.id, me.id);
+		const db = await getDb();
+		const targetId = String((await request.formData()).get('targetId') ?? '');
+		if (!targetId || targetId === me.id) return fail(400, { error: 'Invalid request.' });
+
+		// Must actually be my accepted friend.
+		const friend = await db
+			.select({ id: friendships.id })
+			.from(friendships)
+			.where(
+				and(
+					eq(friendships.status, 'accepted'),
+					or(
+						and(eq(friendships.requesterId, me.id), eq(friendships.addresseeId, targetId)),
+						and(eq(friendships.requesterId, targetId), eq(friendships.addresseeId, me.id))
+					)
+				)
+			)
+			.limit(1);
+		if (!friend[0]) return fail(403, { error: 'You can only invite your friends.' });
+
+		await db
+			.insert(tripMembers)
+			.values({ tripId: params.id, userId: targetId, role: 'member' })
+			.onConflictDoNothing();
+		return { invited: true };
+	},
+
 	updateTrip: async ({ params, request, locals }) => {
 		const me = locals.user!;
 		const { db, role } = await requireMembership(params.id, me.id);
@@ -430,10 +466,7 @@ export const actions: Actions = {
 			return fail(400, { settingsError: 'End date is before the start date.' });
 		}
 
-		await db
-			.update(trips)
-			.set({ name, startDate, endDate })
-			.where(eq(trips.id, params.id));
+		await db.update(trips).set({ name, startDate, endDate }).where(eq(trips.id, params.id));
 		return { tripUpdated: true };
 	},
 
@@ -466,176 +499,6 @@ export const actions: Actions = {
 		await db
 			.delete(tripMembers)
 			.where(and(eq(tripMembers.tripId, params.id), eq(tripMembers.userId, me.id)));
-		// Drop my personal route groups for this trip (shared ones stay).
-		await db
-			.delete(routeGroups)
-			.where(and(eq(routeGroups.tripId, params.id), eq(routeGroups.ownerId, me.id)));
 		throw redirect(303, '/trips');
-	},
-
-	createGroup: async ({ params, request, locals }) => {
-		const me = locals.user!;
-		const { db } = await requireMembership(params.id, me.id);
-		const data = await request.formData();
-		const name = String(data.get('name') ?? '').trim();
-		const scope = String(data.get('scope') ?? 'mine');
-		if (!name) return fail(400, { error: 'Name the group.' });
-
-		const ownerId = ownerForScope(scope, me.id);
-		const siblings = await scopeGroupIds(db, params.id, ownerId);
-		await db.insert(routeGroups).values({
-			tripId: params.id,
-			ownerId,
-			name,
-			kind: 'custom',
-			position: siblings.length
-		});
-		return { groupCreated: true };
-	},
-
-	deleteGroup: async ({ params, request, locals }) => {
-		const me = locals.user!;
-		const { db } = await requireMembership(params.id, me.id);
-		const groupId = String((await request.formData()).get('groupId') ?? '');
-
-		const g = (
-			await db.select().from(routeGroups).where(eq(routeGroups.id, groupId)).limit(1)
-		)[0];
-		// Only the owner may delete a personal group; any member may delete a shared one.
-		if (!g || g.tripId !== params.id || (g.ownerId !== null && g.ownerId !== me.id)) {
-			return fail(403, { error: 'Cannot delete that group.' });
-		}
-		await db.delete(routeGroups).where(eq(routeGroups.id, groupId));
-		return { groupDeleted: true };
-	},
-
-	// Move a stop to a group (target = group id) or out of any group (target = 'none').
-	moveItem: async ({ params, request, locals }) => {
-		const me = locals.user!;
-		const { db } = await requireMembership(params.id, me.id);
-		const data = await request.formData();
-		const activityId = String(data.get('activityId') ?? '');
-		const target = String(data.get('target') ?? 'none');
-		const scope = String(data.get('scope') ?? 'mine');
-
-		let ownerId: string | null;
-		if (target !== 'none') {
-			const g = (
-				await db.select().from(routeGroups).where(eq(routeGroups.id, target)).limit(1)
-			)[0];
-			if (!g || g.tripId !== params.id || (g.ownerId !== null && g.ownerId !== me.id)) {
-				return fail(403, { error: 'Cannot edit that group.' });
-			}
-			ownerId = g.ownerId;
-		} else {
-			ownerId = ownerForScope(scope, me.id);
-		}
-
-		// A stop sits in at most one group per scope, so clear any sibling assignment first.
-		const siblings = await scopeGroupIds(db, params.id, ownerId);
-		if (siblings.length) {
-			await db
-				.delete(routeGroupItems)
-				.where(
-					and(
-						eq(routeGroupItems.activityId, activityId),
-						inArray(routeGroupItems.groupId, siblings)
-					)
-				);
-		}
-		if (target !== 'none') {
-			await db
-				.insert(routeGroupItems)
-				.values({ groupId: target, activityId })
-				.onConflictDoNothing();
-		}
-		return { itemMoved: true };
-	},
-
-	autoSplitDays: async ({ params, request, locals }) => {
-		const me = locals.user!;
-		const { db } = await requireMembership(params.id, me.id);
-		const scope = String((await request.formData()).get('scope') ?? 'mine');
-		const ownerId = ownerForScope(scope, me.id);
-
-		const trip = (await db.select().from(trips).where(eq(trips.id, params.id)).limit(1))[0];
-
-		// Recompute the candidate set + proximity order for this scope.
-		const acts = await db.select().from(activities).where(eq(activities.tripId, params.id));
-		const actIds = acts.map((a) => a.id);
-		const votes = actIds.length
-			? await db.select().from(activityVotes).where(inArray(activityVotes.activityId, actIds))
-			: [];
-		const scoreOf = (id: string) =>
-			votes.filter((v) => v.activityId === id).reduce((s, v) => s + v.value, 0);
-		const myVoteOf = (id: string) =>
-			votes.find((v) => v.activityId === id && v.userId === me.id)?.value ?? 0;
-
-		const candidates = acts.filter((a) =>
-			scope === 'shared' ? true : a.proposedBy === me.id || myVoteOf(a.id) === 1
-		);
-		const coordCands = candidates.filter(
-			(a) => a.lat && a.lng && Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lng))
-		);
-		const ordered = buildRoute(
-			coordCands.map((a) => ({
-				id: a.id,
-				title: a.title,
-				score: scoreOf(a.id),
-				lat: Number(a.lat),
-				lng: Number(a.lng)
-			}))
-		).stops.map((s) => s.id);
-
-		// Replace existing day groups in this scope (custom groups are left alone).
-		const existing = await db
-			.select()
-			.from(routeGroups)
-			.where(
-				and(
-					eq(routeGroups.tripId, params.id),
-					eq(routeGroups.kind, 'day'),
-					ownerId === null ? isNull(routeGroups.ownerId) : eq(routeGroups.ownerId, ownerId)
-				)
-			);
-		if (existing.length) {
-			await db.delete(routeGroups).where(
-				inArray(
-					routeGroups.id,
-					existing.map((g) => g.id)
-				)
-			);
-		}
-
-		if (ordered.length === 0) return { split: true };
-
-		const numDays =
-			trip?.startDate && trip?.endDate
-				? dayCountInclusive(trip.startDate, trip.endDate)
-				: Math.max(1, Math.ceil(ordered.length / 4));
-		const perDay = Math.ceil(ordered.length / numDays);
-
-		for (let d = 0; d < numDays; d++) {
-			const chunk = ordered.slice(d * perDay, (d + 1) * perDay);
-			if (chunk.length === 0) continue;
-			const dayDate = trip?.startDate ? addDaysISO(trip.startDate, d) : null;
-			const created = (
-				await db
-					.insert(routeGroups)
-					.values({
-						tripId: params.id,
-						ownerId,
-						name: `Day ${d + 1}`,
-						kind: 'day',
-						dayDate,
-						position: d
-					})
-					.returning({ id: routeGroups.id })
-			)[0];
-			await db
-				.insert(routeGroupItems)
-				.values(chunk.map((activityId) => ({ groupId: created.id, activityId })));
-		}
-		return { split: true };
 	}
 };

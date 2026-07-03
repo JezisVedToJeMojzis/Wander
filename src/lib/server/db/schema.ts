@@ -113,13 +113,20 @@ export const activities = pgTable(
 		category: text('category', {
 			enum: [
 				'food',
+				'cafe',
 				'sightseeing',
 				'museum',
 				'culture',
 				'streetart',
-				'nightlife',
+				'shopping',
+				'thrifting',
+				'market',
+				'nature',
 				'outdoors',
+				'beach',
 				'sport',
+				'clubbing',
+				'bar',
 				'other'
 			]
 		})
@@ -131,9 +138,12 @@ export const activities = pgTable(
 		lat: text('lat'),
 		lng: text('lng'),
 		estCost: integer('est_cost'),
-		// Scheduling: null = still just an idea; set = placed on the itinerary.
+		// Scheduling: null = still just an idea; set = placed on the itinerary (a day).
 		scheduledDate: date('scheduled_date'),
-		startTime: text('start_time'), // 'HH:MM'
+		// Manual order within a day, set by drag-and-drop in the Plan tab.
+		dayOrder: integer('day_order').notNull().default(0),
+		// Legacy time-of-day fields — scheduling is date-only now; kept nullable/unused.
+		startTime: text('start_time'),
 		durationMin: integer('duration_min'),
 		proposedBy: uuid('proposed_by')
 			.notNull()
@@ -160,45 +170,6 @@ export const activityVotes = pgTable(
 	(t) => [primaryKey({ columns: [t.activityId, t.userId] })]
 );
 
-// ---------------------------------------------------------------------------
-// Route groups — organise route stops into days or custom buckets.
-// owner_id NULL  => shared with the whole trip (any member can edit)
-// owner_id set   => personal to that user (only they see/edit it)
-// ---------------------------------------------------------------------------
-
-export const routeGroups = pgTable(
-	'route_groups',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		tripId: uuid('trip_id')
-			.notNull()
-			.references(() => trips.id, { onDelete: 'cascade' }),
-		ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
-		name: text('name').notNull(),
-		kind: text('kind', { enum: ['day', 'custom'] })
-			.notNull()
-			.default('custom'),
-		dayDate: date('day_date'),
-		position: integer('position').notNull().default(0),
-		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
-	},
-	(t) => [index('route_groups_trip_idx').on(t.tripId)]
-);
-
-export const routeGroupItems = pgTable(
-	'route_group_items',
-	{
-		groupId: uuid('group_id')
-			.notNull()
-			.references(() => routeGroups.id, { onDelete: 'cascade' }),
-		activityId: uuid('activity_id')
-			.notNull()
-			.references(() => activities.id, { onDelete: 'cascade' })
-	},
-	(t) => [primaryKey({ columns: [t.groupId, t.activityId] })]
-);
-
 export type User = typeof users.$inferSelect;
 export type Trip = typeof trips.$inferSelect;
 export type Activity = typeof activities.$inferSelect;
-export type RouteGroup = typeof routeGroups.$inferSelect;

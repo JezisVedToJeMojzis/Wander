@@ -1,7 +1,7 @@
 import { fail } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { getDb } from '$lib/server/db';
-import { users } from '$lib/server/db/schema';
+import { tripMembers, users } from '$lib/server/db/schema';
 import { hashPassword, verifyPassword } from '$lib/server/auth';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -15,7 +15,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.where(eq(users.id, me.id))
 			.limit(1)
 	)[0];
-	return { account };
+	const tripCount = (
+		await db
+			.select({ count: sql<number>`count(*)::int` })
+			.from(tripMembers)
+			.where(eq(tripMembers.userId, me.id))
+	)[0].count;
+	return { account, tripCount };
 };
 
 export const actions: Actions = {
