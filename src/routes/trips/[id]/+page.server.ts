@@ -36,14 +36,41 @@ async function geocodeForTrip(
 	const trip = (
 		await db.select({ name: trips.name }).from(trips).where(eq(trips.id, tripId)).limit(1)
 	)[0];
-	// Try the location with the destination appended first (disambiguates short names like
-	// "Colosseum"), then fall back to the bare location if the hint over-constrains it
-	// (e.g. a full street address, or a place whose name already includes the city).
-	if (trip?.name && !locationName.toLowerCase().includes(trip.name.toLowerCase())) {
-		const hinted = await geocode(`${locationName}, ${trip.name}`);
-		if (hinted) return hinted;
+	const city = trip?.name?.trim();
+	// The first comma-segment is the meaningful bit — a street+number or a POI name. The rest
+	// is often noise Nominatim's free-text search chokes on (e.g. a district like
+	// "Berlin-Bezirk Tempelhof-Schöneberg" or a duplicated country).
+	const first = locationName.split(',')[0].trim();
+
+	// Try progressively simpler queries and take the first that resolves.
+	const seen = new Set<string>();
+	const candidates: string[] = [];
+	const add = (q?: string | null) => {
+		const t = q?.trim();
+		if (t && !seen.has(t.toLowerCase())) {
+			seen.add(t.toLowerCase());
+			candidates.push(t);
+		}
+	};
+	add(locationName); // as typed (handles clean addresses + POI names)
+	if (city && !locationName.toLowerCase().includes(city.toLowerCase())) add(`${locationName}, ${city}`);
+	if (city && first) add(`${first}, ${city}`); // street/POI + destination city — rescues messy pasted addresses
+	add(first); // street/POI alone
+
+	// Street addresses sometimes carry a unit designator after the house number (e.g.
+	// "Reichenberger Str. 176 Laden Nr. 14") that Nominatim rejects — keep just
+	// "<street> <house-number>" as a last resort.
+	const streetNum = first.match(/^(.+?\s\d+[a-z]?)(?:\s|$)/i)?.[1]?.trim();
+	if (streetNum && streetNum.toLowerCase() !== first.toLowerCase()) {
+		if (city) add(`${streetNum}, ${city}`);
+		add(streetNum);
 	}
-	return geocode(locationName);
+
+	for (const q of candidates) {
+		const geo = await geocode(q);
+		if (geo) return geo;
+	}
+	return null;
 }
 
 const hasCoords = (a: { lat: string | null; lng: string | null }) =>
