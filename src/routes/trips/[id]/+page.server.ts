@@ -43,6 +43,31 @@ async function geocodeForTrip(
 const hasCoords = (a: { lat: string | null; lng: string | null }) =>
 	!!a.lat && !!a.lng && Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lng));
 
+// Fire-and-forget: geocode the given activities and persist their coordinates. adapter-node
+// is long-lived, so this keeps running after the response is sent — page loads and writes
+// never block on Nominatim. Coordinates (and thus routes/distances) appear on the next visit.
+function backfillCoords(
+	db: Awaited<ReturnType<typeof getDb>>,
+	tripId: string,
+	items: Array<{ id: string; locationName: string }>
+) {
+	void (async () => {
+		for (const it of items) {
+			try {
+				const geo = await geocodeForTrip(db, tripId, it.locationName);
+				if (geo) {
+					await db
+						.update(activities)
+						.set({ lat: geo.lat, lng: geo.lng })
+						.where(and(eq(activities.id, it.id), eq(activities.tripId, tripId)));
+				}
+			} catch {
+				/* best-effort */
+			}
+		}
+	})();
+}
+
 export const load: PageServerLoad = async ({ params, locals }) => {
 	const me = locals.user!;
 	const { db, role } = await requireMembership(params.id, me.id);
@@ -74,20 +99,11 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		? await db.select().from(activityVotes).where(inArray(activityVotes.activityId, actIds))
 		: [];
 
-	// Backfill any missing coordinates by geocoding the location name (then persist, so we
-	// don't re-query on every visit). Best-effort: failures just leave the place uncoordinated.
-	for (const a of acts) {
-		if (!hasCoords(a) && a.locationName) {
-			const geo = await geocode(a.locationName);
-			if (geo) {
-				a.lat = geo.lat;
-				a.lng = geo.lng;
-				await db
-					.update(activities)
-					.set({ lat: geo.lat, lng: geo.lng })
-					.where(eq(activities.id, a.id));
-			}
-		}
+	// Geocode any activities still missing coordinates in the background — never block the
+	// page render on Nominatim. They pick up a route/distance on the next visit.
+	const needsGeo = acts.filter((a) => !hasCoords(a) && a.locationName);
+	if (needsGeo.length) {
+		backfillCoords(db, params.id, needsGeo.map((a) => ({ id: a.id, locationName: a.locationName! })));
 	}
 
 	const nameById = new Map(members.map((m) => [m.id, m.name]));
@@ -230,20 +246,22 @@ export const actions: Actions = {
 		const estCostRaw = String(data.get('estCost') ?? '').trim();
 		const estCost = estCostRaw ? Number.parseInt(estCostRaw, 10) : null;
 
-		// Geocode the location up front so it can join routes right away (best-effort).
-		const geo = await geocodeForTrip(db, params.id, locationName);
+		const inserted = await db
+			.insert(activities)
+			.values({
+				tripId: params.id,
+				title,
+				category: category as never,
+				locationName,
+				notes: String(data.get('notes') ?? '').trim() || null,
+				estCost: Number.isFinite(estCost) ? estCost : null,
+				proposedBy: me.id
+			})
+			.returning({ id: activities.id });
 
-		await db.insert(activities).values({
-			tripId: params.id,
-			title,
-			category: category as never,
-			locationName,
-			lat: geo?.lat ?? null,
-			lng: geo?.lng ?? null,
-			notes: String(data.get('notes') ?? '').trim() || null,
-			estCost: Number.isFinite(estCost) ? estCost : null,
-			proposedBy: me.id
-		});
+		// Geocode in the background so adding feels instant. The Maps link works off the name
+		// right away; the route/distance fill in on the next load.
+		backfillCoords(db, params.id, [{ id: inserted[0].id, locationName }]);
 
 		return { added: true };
 	},
@@ -274,27 +292,22 @@ export const actions: Actions = {
 		const estCostRaw = String(data.get('estCost') ?? '').trim();
 		const estCost = estCostRaw ? Number.parseInt(estCostRaw, 10) : null;
 
-		// Re-geocode only when the location text actually changed.
-		let lat = existing.lat;
-		let lng = existing.lng;
-		if (locationName !== existing.locationName) {
-			const geo = await geocodeForTrip(db, params.id, locationName);
-			lat = geo?.lat ?? null;
-			lng = geo?.lng ?? null;
-		}
-
+		// When the location text changes, clear the coordinates and re-derive them in the
+		// background so the save returns immediately.
+		const locationChanged = locationName !== existing.locationName;
 		await db
 			.update(activities)
 			.set({
 				title,
 				category: category as never,
 				locationName,
-				lat,
-				lng,
+				lat: locationChanged ? null : existing.lat,
+				lng: locationChanged ? null : existing.lng,
 				notes: String(data.get('notes') ?? '').trim() || null,
 				estCost: Number.isFinite(estCost) ? estCost : null
 			})
 			.where(eq(activities.id, activityId));
+		if (locationChanged) backfillCoords(db, params.id, [{ id: activityId, locationName }]);
 		return { updated: true };
 	},
 

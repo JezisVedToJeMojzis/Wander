@@ -25,8 +25,9 @@ export async function geocode(query: string): Promise<Geo | null> {
 		const data = (await res.json()) as Array<{ lat: string; lon: string }>;
 		const hit = data[0];
 		const geo = hit ? { lat: String(hit.lat), lng: String(hit.lon) } : null;
-		// Only cache positive hits so transient failures can be retried later.
-		if (geo) cache.set(key, geo);
+		// Cache both hits and misses so a location that doesn't resolve isn't re-queried on
+		// every page load. The cache is per-process, so restarts still give it a fresh try.
+		cache.set(key, geo);
 		return geo;
 	} catch {
 		return null;
