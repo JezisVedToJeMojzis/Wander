@@ -185,7 +185,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			const items = dayItems.map((a) => ({
 				...a,
 				nearbySameDay: hasCoords(a)
-					? nearestFrom({ lat: Number(a.lat), lng: Number(a.lng) }, dayCoords, a.id)
+					? nearestFrom({ lat: Number(a.lat), lng: Number(a.lng) }, dayCoords, a.id, 5)
 					: []
 			}));
 			const routePoints = dayItems.filter(hasCoords).map((a) => ({ lat: a.lat!, lng: a.lng! }));
