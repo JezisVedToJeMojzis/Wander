@@ -6,7 +6,6 @@
 
 	const navItems = [
 		{ href: '/trips', label: 'Trips', icon: '🧳' },
-		{ href: '/friends', label: 'Friends', icon: '👥' },
 		{ href: '/profile', label: 'You', icon: '🙂' }
 	];
 

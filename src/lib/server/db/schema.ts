@@ -5,8 +5,8 @@ import {
 	timestamp,
 	integer,
 	date,
+	boolean,
 	primaryKey,
-	uniqueIndex,
 	index,
 	smallint
 } from 'drizzle-orm/pg-core';
@@ -31,26 +31,6 @@ export const sessions = pgTable('sessions', {
 	expiresAt: timestamp('expires_at', { withTimezone: true }).notNull()
 });
 
-// Friendship is a single row per pair. `status` covers the request lifecycle.
-// `requesterId` is who sent the request; the other side is the addressee.
-export const friendships = pgTable(
-	'friendships',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		requesterId: uuid('requester_id')
-			.notNull()
-			.references(() => users.id, { onDelete: 'cascade' }),
-		addresseeId: uuid('addressee_id')
-			.notNull()
-			.references(() => users.id, { onDelete: 'cascade' }),
-		status: text('status', { enum: ['pending', 'accepted'] })
-			.notNull()
-			.default('pending'),
-		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
-	},
-	(t) => [uniqueIndex('friendships_pair_idx').on(t.requesterId, t.addresseeId)]
-);
-
 // ---------------------------------------------------------------------------
 // Trips
 // ---------------------------------------------------------------------------
@@ -60,6 +40,11 @@ export const trips = pgTable('trips', {
 	name: text('name').notNull(),
 	startDate: date('start_date'),
 	endDate: date('end_date'),
+	// Where everyone is staying — used for per-activity distance and as the optional
+	// starting point of each day's route.
+	accommodationName: text('accommodation_name'),
+	accommodationLat: text('accommodation_lat'),
+	accommodationLng: text('accommodation_lng'),
 	status: text('status', { enum: ['planning', 'scheduled', 'done'] })
 		.notNull()
 		.default('planning'),
@@ -142,6 +127,8 @@ export const activities = pgTable(
 		scheduledDate: date('scheduled_date'),
 		// Manual order within a day, set by drag-and-drop in the Plan tab.
 		dayOrder: integer('day_order').notNull().default(0),
+		// Ticked off in the Plan once it's been done (stays visible, just de-emphasised).
+		done: boolean('done').notNull().default(false),
 		// Legacy time-of-day fields — scheduling is date-only now; kept nullable/unused.
 		startTime: text('start_time'),
 		durationMin: integer('duration_min'),

@@ -1,11 +1,10 @@
 import { error, fail, redirect } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { getDb } from '$lib/server/db';
 import {
 	activities,
 	activityVotes,
-	friendships,
 	tripInvites,
 	tripMembers,
 	trips,
@@ -52,48 +51,21 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	const trip = tripRow[0];
 	if (!trip) throw error(404, 'Trip not found.');
 
-	// Members + my friendship status toward each of them.
-	const memberRows = await db
+	// Accommodation point (if set + geocoded) for distances and day-route starts.
+	const accom = hasCoords({ lat: trip.accommodationLat, lng: trip.accommodationLng })
+		? { lat: Number(trip.accommodationLat), lng: Number(trip.accommodationLng) }
+		: null;
+
+	// Members (join to get names). Anyone joins via the share link, so this is a flat list.
+	const members = await db
 		.select({ id: users.id, name: users.name, role: tripMembers.role })
 		.from(tripMembers)
 		.innerJoin(users, eq(tripMembers.userId, users.id))
 		.where(eq(tripMembers.tripId, params.id));
 
-	const myFriendships = await db
-		.select()
-		.from(friendships)
-		.where(or(eq(friendships.requesterId, me.id), eq(friendships.addresseeId, me.id)));
-
-	const friendStatusFor = (otherId: string): 'self' | 'accepted' | 'sent' | 'received' | 'none' => {
-		if (otherId === me.id) return 'self';
-		const f = myFriendships.find(
-			(x) =>
-				(x.requesterId === me.id && x.addresseeId === otherId) ||
-				(x.requesterId === otherId && x.addresseeId === me.id)
-		);
-		if (!f) return 'none';
-		if (f.status === 'accepted') return 'accepted';
-		return f.requesterId === me.id ? 'sent' : 'received';
-	};
-
-	const members = memberRows.map((m) => ({ ...m, friendStatus: friendStatusFor(m.id) }));
-
 	// You can leave unless you're the sole organizer (then you must delete or hand off).
 	const organizerCount = members.filter((m) => m.role === 'organizer').length;
 	const canLeave = !(role === 'organizer' && organizerCount === 1);
-
-	// Friends I could invite straight into this trip = my accepted friends not already members.
-	const memberIds = new Set(memberRows.map((m) => m.id));
-	const acceptedFriendIds = myFriendships
-		.filter((f) => f.status === 'accepted')
-		.map((f) => (f.requesterId === me.id ? f.addresseeId : f.requesterId))
-		.filter((id) => !memberIds.has(id));
-	const invitableFriends = acceptedFriendIds.length
-		? await db
-				.select({ id: users.id, name: users.name })
-				.from(users)
-				.where(inArray(users.id, acceptedFriendIds))
-		: [];
 
 	// Activities + vote tallies.
 	const acts = await db.select().from(activities).where(eq(activities.tripId, params.id));
@@ -118,40 +90,58 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		}
 	}
 
-	const nameById = new Map(memberRows.map((m) => [m.id, m.name]));
-	const catOf = new Map(acts.map((a) => [a.id, a.category]));
-	const titleOf = new Map(acts.map((a) => [a.id, a.title]));
+	const nameById = new Map(members.map((m) => [m.id, m.name]));
+	const actById = new Map(acts.map((a) => [a.id, a]));
 
-	// Precompute, for each coordinate-bearing place, the 5 nearest other places (added to
-	// this trip) with their distance — used by the "Nearby" helper in the Activities tab.
-	const coordActs = acts.filter(hasCoords).map((a) => ({ id: a.id, lat: Number(a.lat), lng: Number(a.lng) }));
-	const nearbyFor = (a: (typeof acts)[number]) => {
-		if (!hasCoords(a)) return [];
-		const from = { lat: Number(a.lat), lng: Number(a.lng) };
-		return coordActs
-			.filter((o) => o.id !== a.id)
-			.map((o) => ({ id: o.id, title: titleOf.get(o.id)!, category: catOf.get(o.id)!, km: haversineKm(from, o) }))
-			.sort((x, y) => x.km - y.km)
-			.slice(0, 5);
+	// Build a "nearest places" list from a source point over a candidate set. Each entry
+	// carries what's needed to render a Google Maps link for that place.
+	type CoordAct = { id: string; lat: number; lng: number };
+	const nearestFrom = (
+		src: { lat: number; lng: number },
+		candidates: CoordAct[],
+		excludeId: string,
+		limit?: number
+	) => {
+		const list = candidates
+			.filter((o) => o.id !== excludeId)
+			.map((o) => {
+				const full = actById.get(o.id)!;
+				return {
+					id: o.id,
+					title: full.title,
+					category: full.category,
+					locationName: full.locationName,
+					lat: full.lat,
+					lng: full.lng,
+					km: haversineKm(src, o)
+				};
+			})
+			.sort((x, y) => x.km - y.km);
+		return limit ? list.slice(0, limit) : list;
 	};
+
+	const coordActs: CoordAct[] = acts
+		.filter(hasCoords)
+		.map((a) => ({ id: a.id, lat: Number(a.lat), lng: Number(a.lng) }));
 
 	const decorated = acts.map((a) => {
 		const votes = allVotes.filter((v) => v.activityId === a.id);
-		const score = votes.reduce((s, v) => s + v.value, 0);
-		const up = votes.filter((v) => v.value === 1).length;
+		const score = votes.reduce((s, v) => s + v.value, 0); // anonymous — count only
 		const myVote = votes.find((v) => v.userId === me.id)?.value ?? 0;
-		const interestedNames = votes
-			.filter((v) => v.value === 1)
-			.map((v) => (v.userId === me.id ? 'You' : (nameById.get(v.userId) ?? 'Someone')));
 		const proposedByName =
 			a.proposedBy === me.id ? 'You' : (nameById.get(a.proposedBy) ?? 'Someone');
 		const canEdit = a.proposedBy === me.id || role === 'organizer';
-		return { ...a, score, up, myVote, interestedNames, proposedByName, canEdit, nearby: nearbyFor(a) };
+		const distFromAccom =
+			accom && hasCoords(a) ? haversineKm(accom, { lat: Number(a.lat), lng: Number(a.lng) }) : null;
+		const nearby = hasCoords(a)
+			? nearestFrom({ lat: Number(a.lat), lng: Number(a.lng) }, coordActs, a.id, 5)
+			: [];
+		return { ...a, score, myVote, proposedByName, canEdit, distFromAccom, nearby };
 	});
 
 	const pool = decorated
 		.filter((a) => !a.scheduledDate)
-		.sort((a, b) => b.score - a.score || b.up - a.up);
+		.sort((a, b) => b.score - a.score);
 
 	// Scheduled activities grouped into days; within a day, ordered by the manual drag order.
 	const scheduledActs = decorated
@@ -171,13 +161,31 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	}
 	const days = [...dayMap.entries()]
 		.sort((a, b) => (a[0] < b[0] ? -1 : 1))
-		.map(([date, items]) => {
-			const routePoints = items.filter(hasCoords).map((a) => ({ lat: a.lat!, lng: a.lng! }));
+		.map(([date, dayItems]) => {
+			// Same-day coordinate set, so "nearby" in the Plan only considers this day.
+			const dayCoords: CoordAct[] = dayItems
+				.filter(hasCoords)
+				.map((a) => ({ id: a.id, lat: Number(a.lat), lng: Number(a.lng) }));
+			const items = dayItems.map((a) => ({
+				...a,
+				nearbySameDay: hasCoords(a)
+					? nearestFrom({ lat: Number(a.lat), lng: Number(a.lng) }, dayCoords, a.id)
+					: []
+			}));
+			const routePoints = dayItems.filter(hasCoords).map((a) => ({ lat: a.lat!, lng: a.lng! }));
 			return {
 				date,
 				items,
 				mapsUrl: googleMapsDirectionsUrl(routePoints),
-				total: items.reduce((s, a) => s + (a.estCost ?? 0), 0)
+				// Same route, but starting from the accommodation (toggleable in the UI).
+				mapsUrlFromAccom:
+					accom && routePoints.length >= 1
+						? googleMapsDirectionsUrl([
+								{ lat: String(accom.lat), lng: String(accom.lng) },
+								...routePoints
+							])
+						: null,
+				total: dayItems.reduce((s, a) => s + (a.estCost ?? 0), 0)
 			};
 		});
 
@@ -199,12 +207,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		trip,
 		myRole: role,
 		members,
-		invitableFriends,
 		pool,
 		days,
 		scheduledCount: scheduledActs.length,
 		inviteToken: invite.token,
-		canLeave
+		canLeave,
+		hasAccommodation: !!accom
 	};
 };
 
@@ -325,7 +333,8 @@ export const actions: Actions = {
 			.limit(1);
 		if (!a[0]) return fail(400, { error: 'Unknown activity.' });
 
-		// Upvote-only: value 1 marks interest, anything else clears it.
+		// Upvote-only: value 1 marks interest, anything else clears it. Votes stay anonymous
+		// (only the tally is ever shown), but we still store who voted to prevent double-votes.
 		if (value === 1) {
 			await db
 				.insert(activityVotes)
@@ -343,7 +352,7 @@ export const actions: Actions = {
 	},
 
 	// Schedule onto a day (date only) or send back to ideas (empty date). New day placements
-	// go to the end of that day's list.
+	// go to the end of that day's list, and land un-done.
 	schedule: async ({ params, request, locals }) => {
 		const me = locals.user!;
 		const { db } = await requireMembership(params.id, me.id);
@@ -362,10 +371,24 @@ export const actions: Actions = {
 
 		await db
 			.update(activities)
-			.set({ scheduledDate, dayOrder })
+			.set({ scheduledDate, dayOrder, done: false })
 			.where(and(eq(activities.id, activityId), eq(activities.tripId, params.id)));
 
 		return { scheduled: true };
+	},
+
+	// Mark a scheduled activity done / not done (stays in the plan, just de-emphasised).
+	toggleDone: async ({ params, request, locals }) => {
+		const me = locals.user!;
+		const { db } = await requireMembership(params.id, me.id);
+		const data = await request.formData();
+		const activityId = String(data.get('activityId') ?? '');
+		const done = String(data.get('done') ?? '') === 'true';
+		await db
+			.update(activities)
+			.set({ done })
+			.where(and(eq(activities.id, activityId), eq(activities.tripId, params.id)));
+		return { doneToggled: true };
 	},
 
 	// Persist a new manual order for one day (drag-and-drop). `ids` is the ordered list.
@@ -392,66 +415,6 @@ export const actions: Actions = {
 		return { reordered: true };
 	},
 
-	addFriend: async ({ params, request, locals }) => {
-		const me = locals.user!;
-		await requireMembership(params.id, me.id);
-		const db = await getDb();
-		const data = await request.formData();
-		const targetId = String(data.get('targetId') ?? '');
-		if (!targetId || targetId === me.id) return fail(400, { error: 'Invalid request.' });
-
-		// If they already sent me a request, accept it; otherwise create a pending one.
-		const reverse = await db
-			.select()
-			.from(friendships)
-			.where(and(eq(friendships.requesterId, targetId), eq(friendships.addresseeId, me.id)))
-			.limit(1);
-
-		if (reverse[0]) {
-			await db
-				.update(friendships)
-				.set({ status: 'accepted' })
-				.where(eq(friendships.id, reverse[0].id));
-		} else {
-			await db
-				.insert(friendships)
-				.values({ requesterId: me.id, addresseeId: targetId })
-				.onConflictDoNothing();
-		}
-		return { friended: true };
-	},
-
-	// Add one of my accepted friends straight into this trip as a member.
-	inviteFriend: async ({ params, request, locals }) => {
-		const me = locals.user!;
-		await requireMembership(params.id, me.id);
-		const db = await getDb();
-		const targetId = String((await request.formData()).get('targetId') ?? '');
-		if (!targetId || targetId === me.id) return fail(400, { error: 'Invalid request.' });
-
-		// Must actually be my accepted friend.
-		const friend = await db
-			.select({ id: friendships.id })
-			.from(friendships)
-			.where(
-				and(
-					eq(friendships.status, 'accepted'),
-					or(
-						and(eq(friendships.requesterId, me.id), eq(friendships.addresseeId, targetId)),
-						and(eq(friendships.requesterId, targetId), eq(friendships.addresseeId, me.id))
-					)
-				)
-			)
-			.limit(1);
-		if (!friend[0]) return fail(403, { error: 'You can only invite your friends.' });
-
-		await db
-			.insert(tripMembers)
-			.values({ tripId: params.id, userId: targetId, role: 'member' })
-			.onConflictDoNothing();
-		return { invited: true };
-	},
-
 	updateTrip: async ({ params, request, locals }) => {
 		const me = locals.user!;
 		const { db, role } = await requireMembership(params.id, me.id);
@@ -466,7 +429,34 @@ export const actions: Actions = {
 			return fail(400, { settingsError: 'End date is before the start date.' });
 		}
 
-		await db.update(trips).set({ name, startDate, endDate }).where(eq(trips.id, params.id));
+		const existing = (
+			await db
+				.select({
+					accommodationName: trips.accommodationName,
+					accommodationLat: trips.accommodationLat,
+					accommodationLng: trips.accommodationLng
+				})
+				.from(trips)
+				.where(eq(trips.id, params.id))
+				.limit(1)
+		)[0];
+
+		const accommodationName = String(data.get('accommodationName') ?? '').trim() || null;
+		let accommodationLat = existing?.accommodationLat ?? null;
+		let accommodationLng = existing?.accommodationLng ?? null;
+		if (!accommodationName) {
+			accommodationLat = null;
+			accommodationLng = null;
+		} else if (accommodationName !== existing?.accommodationName) {
+			const geo = await geocodeForTrip(db, params.id, accommodationName);
+			accommodationLat = geo?.lat ?? null;
+			accommodationLng = geo?.lng ?? null;
+		}
+
+		await db
+			.update(trips)
+			.set({ name, startDate, endDate, accommodationName, accommodationLat, accommodationLng })
+			.where(eq(trips.id, params.id));
 		return { tripUpdated: true };
 	},
 

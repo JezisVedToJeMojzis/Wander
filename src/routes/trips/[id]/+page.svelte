@@ -10,6 +10,9 @@
 	let tab = $state<Tab>('ideas');
 
 	const fmtKm = (km: number) => (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`);
+	const mapsFor = (x: { lat?: string | null; lng?: string | null; locationName?: string | null }) =>
+		googleMapsUrl({ lat: x.lat, lng: x.lng, locationName: x.locationName, destination: data.trip.name });
+
 	let showAdd = $state(false);
 	let scheduleFor = $state<string | null>(null);
 	let editFor = $state<string | null>(null);
@@ -23,7 +26,6 @@
 	const isMine = (a: { proposedByName: string; myVote: number }) =>
 		a.proposedByName === 'You' || a.myVote === 1;
 
-	// Categories present in the pool, for the filter dropdown.
 	const presentCats = $derived<string[]>([...new Set(data.pool.map((a) => a.category as string))]);
 	const visiblePool = $derived(
 		data.pool
@@ -53,6 +55,7 @@
 		{ value: 'other', label: '📌 Other' }
 	];
 	const catLabel = (v: string) => categories.find((c) => c.value === v)?.label ?? '📌 Other';
+	const catIcon = (v: string) => catLabel(v).split(' ')[0];
 
 	function fmtDay(d: string) {
 		return new Date(d).toLocaleDateString(undefined, {
@@ -63,14 +66,18 @@
 	}
 
 	// --- Plan drag-and-drop ---------------------------------------------------
-	// Local, mutable copy of the day buckets that the dnd library reorders. Kept in
-	// sync with server data; on drop we persist the new order and reload.
 	type PlanItem = (typeof data.days)[number]['items'][number];
-	type PlanDay = { date: string; items: PlanItem[]; mapsUrl: string | null; total: number };
+	type PlanDay = (typeof data.days)[number];
 	let planDays = $state<PlanDay[]>([]);
 	$effect(() => {
 		planDays = data.days.map((d) => ({ ...d, items: [...d.items] }));
 	});
+
+	// Per-day "start the route from the accommodation" toggle (defaults on when set).
+	let accomStart = $state<Record<string, boolean>>({});
+	const usesAccom = (date: string) => accomStart[date] ?? data.hasAccommodation;
+	const routeHref = (day: PlanDay) =>
+		usesAccom(day.date) && day.mapsUrlFromAccom ? day.mapsUrlFromAccom : day.mapsUrl;
 
 	function considerDay(day: PlanDay, e: CustomEvent<{ items: PlanItem[] }>) {
 		day.items = e.detail.items;
@@ -96,6 +103,24 @@
 	}
 </script>
 
+{#snippet nearbyList(items: PlanItem['nearbySameDay'])}
+	<div class="mt-3 rounded-xl bg-slate-800 p-3">
+		<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Closest activities</p>
+		<ul class="flex flex-col gap-1.5">
+			{#each items as n (n.id)}
+				{@const m = mapsFor(n)}
+				<li class="flex items-center justify-between gap-2 text-sm">
+					<span class="min-w-0 truncate text-slate-200">{catIcon(n.category)} {n.title}</span>
+					<span class="flex shrink-0 items-center gap-2">
+						<span class="text-xs text-sky-300">{fmtKm(n.km)}</span>
+						{#if m}<a href={m} target="_blank" rel="noreferrer" class="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-sky-300">🗺️</a>{/if}
+					</span>
+				</li>
+			{/each}
+		</ul>
+	</div>
+{/snippet}
+
 <header class="mb-4">
 	<div class="flex items-center justify-between">
 		<a href="/trips" class="text-sm text-slate-400">← Trips</a>
@@ -111,6 +136,9 @@
 			{fmtDay(data.trip.startDate)}{#if data.trip.endDate} – {fmtDay(data.trip.endDate)}{/if}
 		</p>
 	{/if}
+	{#if data.trip.accommodationName}
+		<p class="text-xs text-slate-500">🏨 {data.trip.accommodationName}</p>
+	{/if}
 </header>
 
 {#if showSettings}
@@ -121,14 +149,25 @@
 		{#if data.myRole === 'organizer'}
 			<form method="POST" action="?/updateTrip" use:enhance class="flex flex-col gap-3">
 				<h2 class="text-sm font-bold uppercase tracking-wide text-slate-400">Trip details</h2>
-				<span class="text-xs text-slate-400">Destination</span>
-				<input
-					name="name"
-					value={data.trip.name}
-					placeholder="Destination (e.g. Berlin)"
-					required
-					class="-mt-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base outline-none focus:border-sky-500"
-				/>
+				<label class="flex flex-col gap-1 text-xs text-slate-400">
+					Destination
+					<input
+						name="name"
+						value={data.trip.name}
+						placeholder="Destination (e.g. Berlin)"
+						required
+						class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base text-slate-100 outline-none focus:border-sky-500"
+					/>
+				</label>
+				<label class="flex flex-col gap-1 text-xs text-slate-400">
+					Accommodation (optional — sets distances &amp; day-route start)
+					<input
+						name="accommodationName"
+						value={data.trip.accommodationName ?? ''}
+						placeholder="e.g. Hotel Adlon, or a full address"
+						class="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-base text-slate-100 outline-none focus:border-sky-500"
+					/>
+				</label>
 				<div class="flex gap-3">
 					<label class="flex flex-1 flex-col gap-1 text-xs text-slate-400">
 						Start
@@ -278,10 +317,10 @@
 	{:else}
 		<ul class="flex flex-col gap-3">
 			{#each visiblePool as a (a.id)}
-				{@const maps = googleMapsUrl({ lat: a.lat, lng: a.lng, locationName: a.locationName, destination: data.trip.name })}
+				{@const maps = mapsFor(a)}
 				<li class="rounded-2xl border border-slate-800 bg-slate-900 p-4">
 					<div class="flex gap-3">
-						<!-- Upvote control (interest only) -->
+						<!-- Upvote control (anonymous — count only) -->
 						<form method="POST" action="?/vote" use:enhance>
 							<input type="hidden" name="activityId" value={a.id} />
 							<input type="hidden" name="value" value={a.myVote === 1 ? 0 : 1} />
@@ -300,13 +339,11 @@
 						<div class="min-w-0 flex-1">
 							<p class="font-semibold">{a.title}</p>
 							<p class="text-xs text-slate-400">
-								{catLabel(a.category)}{#if a.estCost} · €{a.estCost}{/if}
+								{catLabel(a.category)}{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏨 {fmtKm(a.distFromAccom)}{/if}
 							</p>
 							{#if a.locationName}<p class="mt-0.5 truncate text-xs text-slate-500">📍 {a.locationName}</p>{/if}
 							{#if a.notes}<p class="mt-1 text-sm text-slate-300">{a.notes}</p>{/if}
-							<p class="mt-1 text-xs text-slate-500">
-								added by {a.proposedByName}{#if a.interestedNames.length} · 👍 {a.interestedNames.join(', ')}{/if}
-							</p>
+							<p class="mt-1 text-xs text-slate-500">added by {a.proposedByName}</p>
 
 							<div class="mt-2 flex flex-wrap gap-2 text-xs">
 								{#if maps}
@@ -340,17 +377,7 @@
 							</div>
 
 							{#if nearbyFor === a.id}
-								<div class="mt-3 rounded-xl bg-slate-800 p-3">
-									<p class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Closest activities</p>
-									<ul class="flex flex-col gap-1">
-										{#each a.nearby as n (n.id)}
-											<li class="flex items-center justify-between gap-2 text-sm">
-												<span class="truncate text-slate-200">{catLabel(n.category).split(' ')[0]} {n.title}</span>
-												<span class="shrink-0 text-xs text-sky-300">{fmtKm(n.km)}</span>
-											</li>
-										{/each}
-									</ul>
-								</div>
+								{@render nearbyList(a.nearby)}
 							{/if}
 
 							{#if editFor === a.id}
@@ -413,16 +440,22 @@
 				<span class="text-slate-500">· per person if split, divide by {data.members.length}</span>
 			</p>
 		{/if}
-		<p class="mb-4 text-xs text-slate-500">Drag activities to set the order you’ll do them. The 🗺️ Route button opens that day’s stops in Google Maps in this order.</p>
+		<p class="mb-4 text-xs text-slate-500">Drag to set the order you’ll do things. 🗺️ Route opens that day’s stops in Google Maps in this order.</p>
 		<div class="flex flex-col gap-6">
 			{#each planDays as day (day.date)}
 				<section>
-					<div class="mb-2 flex items-baseline justify-between gap-2">
+					<div class="mb-2 flex items-center justify-between gap-2">
 						<h2 class="text-sm font-bold uppercase tracking-wide text-slate-400">{fmtDay(day.date)}</h2>
 						<div class="flex shrink-0 items-center gap-3">
 							{#if day.total > 0}<span class="text-xs text-slate-500">{eur(day.total)}</span>{/if}
-							{#if day.mapsUrl}
-								<a href={day.mapsUrl} target="_blank" rel="noreferrer" class="text-xs font-semibold text-sky-300">🗺️ Route</a>
+							{#if day.mapsUrlFromAccom}
+								<label class="flex items-center gap-1 text-xs text-slate-400">
+									<input type="checkbox" checked={usesAccom(day.date)} onchange={(e) => (accomStart[day.date] = e.currentTarget.checked)} class="accent-sky-500" />
+									🏨
+								</label>
+							{/if}
+							{#if routeHref(day)}
+								<a href={routeHref(day)} target="_blank" rel="noreferrer" class="text-xs font-semibold text-sky-300">🗺️ Route</a>
 							{/if}
 						</div>
 					</div>
@@ -433,27 +466,45 @@
 						class="flex flex-col gap-2"
 					>
 						{#each day.items as a, i (a.id)}
-							{@const maps = googleMapsUrl({ lat: a.lat, lng: a.lng, locationName: a.locationName, destination: data.trip.name })}
-							<li class="flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3">
-								<span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-bold text-white">{i + 1}</span>
+							{@const maps = mapsFor(a)}
+							<li class="flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3 {a.done ? 'opacity-50' : ''}">
+								<span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white {a.done ? 'bg-slate-600' : 'bg-sky-600'}">{a.done ? '✓' : i + 1}</span>
 								<div class="min-w-0 flex-1">
 									<div class="flex items-baseline justify-between gap-2">
-										<p class="truncate font-semibold">{a.title}</p>
+										<p class="truncate font-semibold {a.done ? 'line-through' : ''}">{a.title}</p>
 										<span class="shrink-0 select-none text-slate-600" aria-hidden="true">⠿</span>
 									</div>
 									<p class="text-xs text-slate-400">
-										{catLabel(a.category)}{#if a.estCost} · €{a.estCost}{/if}{#if !a.lat || !a.lng} · no location{/if}
+										{catLabel(a.category)}<span class="text-slate-500"> · 👍 {a.score}</span>{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏨 {fmtKm(a.distFromAccom)}{/if}
 									</p>
+									{#if a.locationName}<p class="mt-0.5 truncate text-xs text-slate-500">📍 {a.locationName}</p>{/if}
+									{#if a.notes}<p class="mt-1 line-clamp-2 text-xs leading-snug text-slate-500">{a.notes}</p>{/if}
 									<div class="mt-2 flex flex-wrap gap-2 text-xs">
 										{#if maps}
 											<a href={maps} target="_blank" rel="noreferrer" class="rounded-full bg-slate-800 px-3 py-1 text-sky-300">🗺️ Maps</a>
 										{/if}
+										{#if a.nearbySameDay.length}
+											<button
+												onclick={() => { nearbyFor = nearbyFor === a.id ? null : a.id; }}
+												class="rounded-full bg-slate-800 px-3 py-1 text-slate-300"
+											>📍 Nearby</button>
+										{/if}
+										<form method="POST" action="?/toggleDone" use:enhance>
+											<input type="hidden" name="activityId" value={a.id} />
+											<input type="hidden" name="done" value={a.done ? 'false' : 'true'} />
+											<button type="submit" class="rounded-full bg-slate-800 px-3 py-1 {a.done ? 'text-slate-400' : 'text-emerald-300'}">
+												{a.done ? '↺ Not done' : '✓ Done'}
+											</button>
+										</form>
 										<form method="POST" action="?/schedule" use:enhance>
 											<input type="hidden" name="activityId" value={a.id} />
 											<input type="hidden" name="scheduledDate" value="" />
 											<button type="submit" class="rounded-full bg-slate-800 px-3 py-1 text-slate-400">↩ Back to ideas</button>
 										</form>
 									</div>
+									{#if nearbyFor === a.id}
+										{@render nearbyList(a.nearbySameDay)}
+									{/if}
 								</div>
 							</li>
 						{/each}
@@ -470,51 +521,17 @@
 		{copied ? '✓ Link copied' : '🔗 Copy invite link'}
 	</button>
 	<p class="-mt-1 mb-5 text-center text-xs text-slate-500">
-		Anyone with the link can join — even if they’re not your friend yet.
+		Share this link to add people. No account? They’ll be prompted to make one, then land straight in the trip.
 	</p>
-
-	{#if data.invitableFriends.length}
-		<section class="mb-5">
-			<h2 class="mb-2 text-sm font-bold uppercase tracking-wide text-slate-400">Invite a friend</h2>
-			<ul class="flex flex-col gap-2">
-				{#each data.invitableFriends as f (f.id)}
-					<li class="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900 p-3">
-						<span class="truncate font-semibold">{f.name}</span>
-						<form method="POST" action="?/inviteFriend" use:enhance>
-							<input type="hidden" name="targetId" value={f.id} />
-							<button type="submit" class="rounded-full bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white">+ Add to trip</button>
-						</form>
-					</li>
-				{/each}
-			</ul>
-		</section>
-	{/if}
 
 	<h2 class="mb-2 text-sm font-bold uppercase tracking-wide text-slate-400">On this trip</h2>
 	<ul class="flex flex-col gap-2">
 		{#each data.members as m (m.id)}
 			<li class="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900 p-3">
-				<div class="min-w-0">
-					<p class="truncate font-semibold">
-						{m.name}
-						{#if m.role === 'organizer'}<span class="ml-1 rounded-full bg-sky-950 px-2 py-0.5 text-xs text-sky-300">organizer</span>{/if}
-					</p>
-				</div>
-				{#if m.friendStatus === 'none'}
-					<form method="POST" action="?/addFriend" use:enhance>
-						<input type="hidden" name="targetId" value={m.id} />
-						<button type="submit" class="rounded-full bg-slate-800 px-3 py-1.5 text-xs font-semibold text-sky-300">+ Add friend</button>
-					</form>
-				{:else if m.friendStatus === 'accepted'}
-					<span class="text-xs text-emerald-400">✓ Friends</span>
-				{:else if m.friendStatus === 'sent'}
-					<span class="text-xs text-slate-500">Request sent</span>
-				{:else if m.friendStatus === 'received'}
-					<form method="POST" action="?/addFriend" use:enhance>
-						<input type="hidden" name="targetId" value={m.id} />
-						<button type="submit" class="rounded-full bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white">Accept</button>
-					</form>
-				{/if}
+				<p class="truncate font-semibold">
+					{m.name}
+					{#if m.role === 'organizer'}<span class="ml-1 rounded-full bg-sky-950 px-2 py-0.5 text-xs text-sky-300">organizer</span>{/if}
+				</p>
 			</li>
 		{/each}
 	</ul>
