@@ -36,8 +36,14 @@ async function geocodeForTrip(
 	const trip = (
 		await db.select({ name: trips.name }).from(trips).where(eq(trips.id, tripId)).limit(1)
 	)[0];
-	const query = trip?.name ? `${locationName}, ${trip.name}` : locationName;
-	return geocode(query);
+	// Try the location with the destination appended first (disambiguates short names like
+	// "Colosseum"), then fall back to the bare location if the hint over-constrains it
+	// (e.g. a full street address, or a place whose name already includes the city).
+	if (trip?.name && !locationName.toLowerCase().includes(trip.name.toLowerCase())) {
+		const hinted = await geocode(`${locationName}, ${trip.name}`);
+		if (hinted) return hinted;
+	}
+	return geocode(locationName);
 }
 
 const hasCoords = (a: { lat: string | null; lng: string | null }) =>
@@ -152,7 +158,13 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		const nearby = hasCoords(a)
 			? nearestFrom({ lat: Number(a.lat), lng: Number(a.lng) }, coordActs, a.id, 5)
 			: [];
-		return { ...a, score, myVote, proposedByName, canEdit, distFromAccom, nearby };
+		// If a place still has no coordinates a minute after it was added, geocoding didn't
+		// find it (vs. just being in-flight) — surface that so the user can fix the location.
+		const locateFailed =
+			!hasCoords(a) &&
+			!!a.locationName &&
+			Date.now() - new Date(a.createdAt).getTime() > 60_000;
+		return { ...a, score, myVote, proposedByName, canEdit, distFromAccom, nearby, locateFailed };
 	});
 
 	const pool = decorated

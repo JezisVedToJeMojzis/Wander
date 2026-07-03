@@ -34,17 +34,22 @@ export function googleMapsDirectionsUrl(
 	points: Array<{ lat: string | number; lng: string | number }>,
 	travelmode: 'walking' | 'driving' | 'transit' | 'bicycling' = 'walking'
 ): string | null {
-	if (points.length < 2) return null;
+	if (points.length === 0) return null;
 	const coord = (p: { lat: string | number; lng: string | number }) => `${p.lat},${p.lng}`;
 
-	const origin = encodeURIComponent(coord(points[0]));
 	const destination = encodeURIComponent(coord(points[points.length - 1]));
-	const waypoints = points
-		.slice(1, -1)
-		.map(coord)
-		.join('|');
+	let url = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=${travelmode}`;
 
-	let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=${travelmode}`;
-	if (waypoints) url += `&waypoints=${encodeURIComponent(waypoints)}`;
+	// With a single point, omit the origin so Google routes from the user's *current
+	// location* ("take me there / take me home"). With more, the first point is the origin
+	// and the middle ones become ordered waypoints.
+	if (points.length >= 2) {
+		url += `&origin=${encodeURIComponent(coord(points[0]))}`;
+		const waypoints = points
+			.slice(1, -1)
+			.map(coord)
+			.join('|');
+		if (waypoints) url += `&waypoints=${encodeURIComponent(waypoints)}`;
+	}
 	return url;
 }

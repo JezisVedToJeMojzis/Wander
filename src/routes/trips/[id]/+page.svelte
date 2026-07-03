@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
-	import { dndzone } from 'svelte-dnd-action';
-	import { googleMapsUrl } from '$lib/maps';
+	import { dragHandleZone, dragHandle } from 'svelte-dnd-action';
+	import { googleMapsUrl, googleMapsDirectionsUrl } from '$lib/maps';
 
 	let { data, form } = $props();
 
@@ -12,6 +12,13 @@
 	const fmtKm = (km: number) => (km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`);
 	const mapsFor = (x: { lat?: string | null; lng?: string | null; locationName?: string | null }) =>
 		googleMapsUrl({ lat: x.lat, lng: x.lng, locationName: x.locationName, destination: data.trip.name });
+
+	// Directions to the accommodation from wherever you are now (no origin = current location).
+	const homeRouteUrl = $derived(
+		data.trip.accommodationLat && data.trip.accommodationLng
+			? googleMapsDirectionsUrl([{ lat: data.trip.accommodationLat, lng: data.trip.accommodationLng }])
+			: null
+	);
 
 	let showAdd = $state(false);
 	let scheduleFor = $state<string | null>(null);
@@ -32,9 +39,6 @@
 			.filter((a) => !mineOnly || isMine(a))
 			.filter((a) => catFilter === 'all' || a.category === catFilter)
 	);
-
-	const eur = (n: number) => `€${n.toLocaleString()}`;
-	const planTotal = $derived(data.days.reduce((s, d) => s + d.total, 0));
 
 	const categories = [
 		{ value: 'food', label: '🍽️ Food' },
@@ -137,7 +141,12 @@
 		</p>
 	{/if}
 	{#if data.trip.accommodationName}
-		<p class="text-xs text-slate-500">🏠 {data.trip.accommodationName}</p>
+		<p class="flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+			<span class="truncate">🏠 {data.trip.accommodationName}</span>
+			{#if homeRouteUrl}
+				<a href={homeRouteUrl} target="_blank" rel="noreferrer" class="shrink-0 rounded-full bg-slate-800 px-2.5 py-0.5 font-semibold text-sky-300">🧭 Route home</a>
+			{/if}
+		</p>
 	{/if}
 </header>
 
@@ -348,6 +357,7 @@
 								{catLabel(a.category)}{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏠 {fmtKm(a.distFromAccom)}{/if}
 							</p>
 							{#if a.locationName}<p class="mt-0.5 truncate text-xs text-slate-500">📍 {a.locationName}</p>{/if}
+							{#if a.locateFailed}<p class="mt-0.5 text-xs text-amber-400">⚠️ Couldn’t find this location — tap ✏️ Edit and use a more specific name or address.</p>{/if}
 							{#if a.notes}<p class="mt-1 text-sm text-slate-300">{a.notes}</p>{/if}
 							<p class="mt-1 text-xs text-slate-500">added by {a.proposedByName}</p>
 
@@ -443,20 +453,13 @@
 			Nothing scheduled yet. Schedule activities from the Activities tab, then drag to order each day.
 		</p>
 	{:else}
-		{#if planTotal > 0}
-			<p class="mb-4 rounded-xl bg-slate-900 px-4 py-3 text-sm text-slate-300">
-				Estimated total: <span class="font-semibold text-white">{eur(planTotal)}</span>
-				<span class="text-slate-500">· per person if split, divide by {data.members.length}</span>
-			</p>
-		{/if}
-		<p class="mb-4 text-xs text-slate-500">Drag to set the order you’ll do things. 🗺️ Route opens that day’s stops in Google Maps in this order.</p>
+		<p class="mb-4 text-xs text-slate-500">Drag the ⠿ handle on the right to set the order you’ll do things. 🗺️ Route opens that day’s stops in Google Maps in this order.</p>
 		<div class="flex flex-col gap-6">
 			{#each planDays as day (day.date)}
 				<section>
 					<div class="mb-2 flex items-center justify-between gap-2">
 						<h2 class="text-sm font-bold uppercase tracking-wide text-slate-400">{fmtDay(day.date)}</h2>
 						<div class="flex shrink-0 items-center gap-3">
-							{#if day.total > 0}<span class="text-xs text-slate-500">{eur(day.total)}</span>{/if}
 							{#if day.mapsUrlFromAccom}
 								<label class="flex items-center gap-1 text-xs text-slate-400">
 									<input type="checkbox" checked={usesAccom(day.date)} onchange={(e) => (accomStart[day.date] = e.currentTarget.checked)} class="accent-sky-500" />
@@ -469,7 +472,7 @@
 						</div>
 					</div>
 					<ul
-						use:dndzone={{ items: day.items, flipDurationMs: 150, type: `day-${day.date}`, dropTargetStyle: {} }}
+						use:dragHandleZone={{ items: day.items, flipDurationMs: 150, type: `day-${day.date}`, dropTargetStyle: {} }}
 						onconsider={(e) => considerDay(day, e)}
 						onfinalize={(e) => finalizeDay(day, e)}
 						class="flex flex-col gap-2"
@@ -479,14 +482,19 @@
 							<li class="flex items-start gap-3 rounded-2xl border border-slate-800 bg-slate-900 p-3 {a.done ? 'opacity-50' : ''}">
 								<span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white {a.done ? 'bg-slate-600' : 'bg-sky-600'}">{a.done ? '✓' : i + 1}</span>
 								<div class="min-w-0 flex-1">
-									<div class="flex items-baseline justify-between gap-2">
+									<div class="flex items-start justify-between gap-2">
 										<p class="truncate font-semibold {a.done ? 'line-through' : ''}">{a.title}</p>
-										<span class="shrink-0 select-none text-slate-600" aria-hidden="true">⠿</span>
+										<span
+											use:dragHandle
+											aria-label="Drag to reorder"
+											class="-mr-1 -mt-1 shrink-0 cursor-grab touch-none select-none p-2 text-lg leading-none text-slate-500 active:cursor-grabbing"
+										>⠿</span>
 									</div>
 									<p class="text-xs text-slate-400">
 										{catLabel(a.category)}<span class="text-slate-500"> · 👍 {a.score}</span>{#if a.estCost} · €{a.estCost}{/if}{#if a.distFromAccom != null} · 🏠 {fmtKm(a.distFromAccom)}{/if}
 									</p>
 									{#if a.locationName}<p class="mt-0.5 truncate text-xs text-slate-500">📍 {a.locationName}</p>{/if}
+									{#if a.locateFailed}<p class="mt-0.5 text-xs text-amber-400">⚠️ Location not found — edit it to enable Maps &amp; nearby.</p>{/if}
 									{#if a.notes}<p class="mt-1 line-clamp-2 text-xs leading-snug text-slate-500">{a.notes}</p>{/if}
 									<div class="mt-2 flex flex-wrap gap-2 text-xs">
 										{#if maps}
